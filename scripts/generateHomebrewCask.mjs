@@ -76,7 +76,7 @@ cask "konjugate" do
 
     caveats <<~EOS
       Konjugate is not code-signed or notarized yet (an active choice while the project is in
-      alpha). If macOS reports that "Konjugate.app is damaged and can't be opened", run:
+      beta). If macOS reports that "Konjugate.app is damaged and can't be opened", run:
         xattr -cr "#{appdir}/Konjugate.app"
     EOS
 

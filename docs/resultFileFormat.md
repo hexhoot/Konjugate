@@ -22,4 +22,4 @@ Completed-result playback follows a wall-clock playhead rather than creating one
 
 The bounded renderer projection does not limit active playback cadence. While playing, the renderer advances its wall-clock playhead at a preferred 10 frames per second and requests the nearest exact full-resolution stored sample from the main process. The playhead remains time-driven, so faster rates naturally skip recorded samples instead of slowing playback to render every value. Visible state updates are limited by this presentation cadence, the configured output interval and IPC response time; no interpolated numerical values are invented.
 
-There is intentionally no user-facing standalone result-file workflow in early alpha.
+There is intentionally no user-facing standalone result-file workflow yet, in beta.

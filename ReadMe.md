@@ -103,7 +103,7 @@ Want a quick look before installing anything? A free, in-browser trial of Konjug
 
 ## Installing a Release Build
 
-Konjugate isn't code-signed yet — an active choice while the project is in alpha, not an accident — so your OS may show a security warning the first time you open a downloaded release. This doesn't mean the download is corrupted.
+Konjugate isn't code-signed yet — an active choice while the project is in beta, not an accident — so your OS may show a security warning the first time you open a downloaded release. This doesn't mean the download is corrupted.
 
 - **macOS**: if you see "Konjugate.app is damaged and can't be opened," move it to Applications, then in Terminal run:
   ```bash

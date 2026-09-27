@@ -2,7 +2,7 @@
 
 name: Cross-platform verification
 
-# Automatic verification is intentionally paused during early-alpha development.
+# Automatic verification is intentionally paused during the project's beta phase.
 # Keep the workflow manually available while cross-platform validation matures.
 on:
     workflow_dispatch:
