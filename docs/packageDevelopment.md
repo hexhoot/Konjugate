@@ -62,9 +62,9 @@ Extraction occurs in a temporary directory and is moved into the versioned insta
 
 Package installation itself does not execute package code — that stays true. Add-ons run later in their existing sandboxed visualizer window. Plugins are not executed by the installer either, but a plugin runtime now exists and does execute plugin code afterward, when a project actually references an installed plugin (`src/pluginResolver.mjs`, wired into `resolveInstalledPlugins` in `src/engineAdapter.mjs`) — it already checks project-reference pinning (`pluginId`/`pluginVersion`) and manifest-identity/API-version compatibility, and rejects a disabled plugin. What it does not yet add is artifact-hash verification or platform-specific package selection.
 
-## Signing direction
+## Signing
 
-Unsigned packages may be used during alpha development, but the installer must show that they are unsigned. A future package signature should cover the canonical manifest, every normalized file path and every file hash. Platform application signing and Konjugate package publisher signing are separate trust layers.
+Unsigned packages install and run exactly as signed ones do — publisher signing (see [docs/namespaces.md](namespaces.md)) is a trust signal, never an install-time gate, so nothing here shows an unsigned package differently by default. `signPackageArchive`/`verifyPackageArchive` in [src/packageArchive.mjs](../src/packageArchive.mjs) cover the canonical manifest, every normalized file path and every file hash, per a namespace prefix reserved in [namespaces.json](../namespaces.json) — matching what this section used to describe as a future direction. Platform application signing (notarization, code-signing certificates — see [docs/packageManagerDistribution.md](packageManagerDistribution.md)) and this package-content publisher signing are still separate trust layers: Konjugate itself ships unsigned at the OS level today, independent of whether an individual `.kja`/`.kjp` a user installs is publisher-signed.
 
 ## Build a package
 

@@ -1,11 +1,12 @@
 /* Copyright © 2026 Zenin Easa Panthakkalakath */
 
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { strToU8, zipSync } from 'fflate';
+import { strToU8, unzipSync, zipSync } from 'fflate';
 import { validateAddonManifest } from '../src/addonHost.mjs';
 import {
     createPackageArchive,
@@ -13,7 +14,9 @@ import {
     installPackageArchive,
     listInstalledPackages,
     PackageArchiveError,
-    uninstallPackage
+    signPackageArchive,
+    uninstallPackage,
+    verifyPackageArchive
 } from '../src/packageArchive.mjs';
 
 const addonManifest = {
@@ -277,4 +280,104 @@ test('a launcher package must contain every file its manifest declares', () => {
         const { [missing]: _removed, ...rest } = complete;
         assert.throws(() => inspectPackageArchive(launcherArchive(rest), { extension: '.kja' }), /does not contain|missing/i, `dropping ${missing}`);
     }
+});
+
+// ---- Publisher signing (see docs/namespaces.md) ----------------------------------------------------
+
+function pem(keyObject, type) {
+    return keyObject.export({ type, format: 'pem' }).toString();
+}
+
+test('a signed package verifies against its namespace entry', () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const namespaces = { prefixes: { example: { owner: 'Example Org', publicKeys: [pem(publicKey, 'spki')] } } };
+    const signed = signPackageArchive(addonArchive(), { privateKey: pem(privateKey, 'pkcs8'), prefix: 'example' });
+    const result = verifyPackageArchive(signed, { namespaces });
+    assert.deepEqual(result, { status: 'verified', prefix: 'example', owner: 'Example Org' });
+    // Signing must not disturb the package's own contents -- it only adds one file.
+    assert.equal(inspectPackageArchive(signed, { extension: '.kja' }).packageManifest.packageId, 'example.helloWorld');
+});
+
+test('key rotation: an older registered key still verifies alongside a newer one', () => {
+    const older = generateKeyPairSync('ed25519');
+    const newer = generateKeyPairSync('ed25519');
+    const namespaces = { prefixes: { example: { owner: 'Example Org', publicKeys: [pem(newer.publicKey, 'spki'), pem(older.publicKey, 'spki')] } } };
+    const signed = signPackageArchive(addonArchive(), { privateKey: pem(older.privateKey, 'pkcs8'), prefix: 'example' });
+    assert.equal(verifyPackageArchive(signed, { namespaces }).status, 'verified');
+});
+
+test('an unsigned package under a reserved prefix reports "unsigned", not "unclaimed"', () => {
+    const { publicKey } = generateKeyPairSync('ed25519');
+    const namespaces = { prefixes: { example: { owner: 'Example Org', publicKeys: [pem(publicKey, 'spki')] } } };
+    const result = verifyPackageArchive(addonArchive(), { namespaces });
+    assert.deepEqual(result, { status: 'unsigned', reservedPrefix: 'example' });
+});
+
+test('an unsigned package under no reserved prefix reports "unclaimed"', () => {
+    assert.deepEqual(verifyPackageArchive(addonArchive(), { namespaces: { prefixes: {} } }), { status: 'unclaimed', reservedPrefix: null });
+    // Also true with no namespaces argument at all -- a caller with no registry loaded gets the
+    // same harmless default rather than an error.
+    assert.deepEqual(verifyPackageArchive(addonArchive()), { status: 'unclaimed', reservedPrefix: null });
+});
+
+test('tampering with a signed package after signing invalidates it', () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const namespaces = { prefixes: { example: { owner: 'Example Org', publicKeys: [pem(publicKey, 'spki')] } } };
+    const signed = signPackageArchive(addonArchive(), { privateKey: pem(privateKey, 'pkcs8'), prefix: 'example' });
+    // Re-zip with one file's content changed, keeping the same signature.json (simulating someone
+    // swapping in different code after the fact without re-signing).
+    const files = unzipSync(signed);
+    const tampered = zipSync({ ...files, 'index.html': strToU8('<!doctype html><script>evil</script>') }, { mtime: new Date('1980-01-01T00:00:00Z') });
+    const result = verifyPackageArchive(Buffer.from(tampered), { namespaces });
+    assert.equal(result.status, 'invalid');
+    assert.match(result.reason, /digest/i);
+});
+
+test('a signature does not verify against the wrong key', () => {
+    const signingKey = generateKeyPairSync('ed25519');
+    const registeredKey = generateKeyPairSync('ed25519');
+    const namespaces = { prefixes: { example: { owner: 'Example Org', publicKeys: [pem(registeredKey.publicKey, 'spki')] } } };
+    const signed = signPackageArchive(addonArchive(), { privateKey: pem(signingKey.privateKey, 'pkcs8'), prefix: 'example' });
+    assert.equal(verifyPackageArchive(signed, { namespaces }).status, 'invalid');
+});
+
+test('a signature claiming an unreserved prefix is invalid, not silently unverified', () => {
+    const { privateKey } = generateKeyPairSync('ed25519');
+    const signed = signPackageArchive(addonArchive(), { privateKey: pem(privateKey, 'pkcs8'), prefix: 'example' });
+    const result = verifyPackageArchive(signed, { namespaces: { prefixes: {} } });
+    assert.equal(result.status, 'invalid');
+    assert.match(result.reason, /not a reserved prefix/);
+});
+
+test('a signature claiming a prefix that is not actually a prefix of the package id is invalid', () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const namespaces = { prefixes: { 'someone.else': { owner: 'Someone Else', publicKeys: [pem(publicKey, 'spki')] } } };
+    // example.helloWorld signed while claiming an unrelated prefix -- must not be accepted even
+    // though "someone.else" is validly reserved and the key is real.
+    const signed = signPackageArchive(addonArchive(), { privateKey: pem(privateKey, 'pkcs8'), prefix: 'someone.else' });
+    const result = verifyPackageArchive(signed, { namespaces });
+    assert.equal(result.status, 'invalid');
+    assert.match(result.reason, /prefix/);
+});
+
+test('signPackageArchive refuses to double-sign, and rejects an invalid prefix', () => {
+    const { privateKey } = generateKeyPairSync('ed25519');
+    const signed = signPackageArchive(addonArchive(), { privateKey: pem(privateKey, 'pkcs8'), prefix: 'example' });
+    assert.throws(() => signPackageArchive(signed, { privateKey: pem(privateKey, 'pkcs8'), prefix: 'example' }),
+        (error) => error instanceof PackageArchiveError && error.code === 'ALREADY_SIGNED');
+    assert.throws(() => signPackageArchive(addonArchive(), { privateKey: pem(privateKey, 'pkcs8'), prefix: 'not a valid prefix!' }),
+        (error) => error instanceof PackageArchiveError && error.code === 'INVALID_PREFIX');
+});
+
+test('the longest matching reserved prefix wins', () => {
+    const parent = generateKeyPairSync('ed25519');
+    const child = generateKeyPairSync('ed25519');
+    const namespaces = {
+        prefixes: {
+            example: { owner: 'Parent', publicKeys: [pem(parent.publicKey, 'spki')] },
+            'example.helloWorld': { owner: 'Child', publicKeys: [pem(child.publicKey, 'spki')] }
+        }
+    };
+    // Unsigned: reservedPrefix should resolve to the more specific "example.helloWorld", not "example".
+    assert.equal(verifyPackageArchive(addonArchive(), { namespaces }).reservedPrefix, 'example.helloWorld');
 });

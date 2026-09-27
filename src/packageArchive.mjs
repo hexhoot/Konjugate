@@ -1,6 +1,6 @@
 /* Copyright © 2026 Zenin Easa Panthakkalakath */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, randomUUID, sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
@@ -17,6 +17,10 @@ export function packageKey(packageType, packageId, version) {
     return `${packageType}:${packageId}:${version}`;
 }
 const packageIdPattern = /^[a-z][A-Za-z0-9]*(?:\.[a-z][A-Za-z0-9]*)+$/;
+// A namespace prefix (see docs/namespaces.md) is the same segment shape as a package id, but a full
+// package id always has two or more segments (packageIdPattern's trailing "+") while a prefix
+// may reserve just the first one -- "example" covering "example.*" -- hence "*" here, not "+".
+const namespacePrefixPattern = /^[a-z][A-Za-z0-9]*(?:\.[a-z][A-Za-z0-9]*)*$/;
 const versionPattern = /^[0-9A-Za-z][0-9A-Za-z.+-]*$/;
 const maximumArchiveBytes = 64 * 1024 * 1024;
 const maximumFileCount = 5000;
@@ -256,4 +260,109 @@ export function createPackageArchive({ packageManifest, contributionManifest, fi
         ...Object.fromEntries(Object.entries(files).map(([name, value]) => [safeArchivePath(name), value instanceof Uint8Array ? value : strToU8(value)]))
     };
     return Buffer.from(zipSync(entries, { level: 6, mtime: new Date('1980-01-01T00:00:00Z') }));
+}
+
+// ---- Publisher signing (see docs/namespaces.md) ----------------------------------------------------
+//
+// A namespace prefix reservation (namespaces.json) only means something if a package claiming
+// that identity can be checked against it -- this is that check. It is deliberately independent
+// of installPackageArchive/inspectPackageArchive: verifyPackageArchive never throws for anything
+// short of a malformed signature.json, and nothing in this file (or main.mjs's install path)
+// calls it as a precondition of installing or running a package. An unreserved prefix, an
+// unsigned package under a reserved one, and a signature that fails to verify are all reported
+// as different statuses for a caller to *show*, not reasons to refuse anything -- Konjugate's
+// plugin ecosystem is permissionless by design, and turning a trust signal into a gate would be
+// a much bigger change than adding one.
+const signatureEntryName = 'signature.json';
+const signatureFormat = 'konjugate-package-signature';
+const signatureFormatVersion = 1;
+
+function isPrefixOf(prefix, packageId) {
+    return packageId === prefix || packageId.startsWith(`${prefix}.`);
+}
+
+// The longest (most specific) reserved prefix covering packageId, if any -- if both "a" and
+// "a.b" were ever reserved (docs/namespaces.md asks reviewers to reject that, but this stays correct
+// even if one slipped through), a package under "a.b.c" is checked against "a.b"'s keys, not "a"'s.
+function matchingPrefix(packageId, prefixes) {
+    let best = null;
+    for (const candidate of Object.keys(prefixes ?? {})) {
+        if (isPrefixOf(candidate, packageId) && (!best || candidate.length > best.length)) best = candidate;
+    }
+    return best;
+}
+
+// Independent of zip byte layout (compression, entry order) -- only the set of (name, content)
+// pairs matters, so re-zipping identical contents (as signPackageArchive does, to add
+// signature.json) can't change what was signed.
+function contentDigest(files) {
+    const lines = Object.keys(files).sort().map((name) => `${name}:${createHash('sha256').update(files[name]).digest('hex')}`);
+    return createHash('sha256').update(lines.join('\n')).digest();
+}
+
+// privateKey: a PEM string or a crypto KeyObject for an Ed25519 private key (see docs/namespaces.md
+// for generating one). prefix: the namespace prefix this key is (expected to be) registered
+// under -- signing doesn't check the registry itself, only verifying does, so this can be done
+// entirely offline/in CI with no access to namespaces.json.
+export function signPackageArchive(archive, { privateKey, prefix }) {
+    if (typeof prefix !== 'string' || !namespacePrefixPattern.test(prefix)) throw new PackageArchiveError('A signing prefix must be a valid namespace prefix.', 'INVALID_PREFIX');
+    const files = inspectEntries(archive);
+    if (files[signatureEntryName]) throw new PackageArchiveError('The package is already signed.', 'ALREADY_SIGNED');
+    const digest = contentDigest(files);
+    const keyObject = typeof privateKey === 'string' ? createPrivateKey(privateKey) : privateKey;
+    const signature = cryptoSign(null, digest, keyObject);
+    const signatureEntry = {
+        format: signatureFormat, formatVersion: signatureFormatVersion, prefix, algorithm: 'ed25519',
+        digest: `sha256:${digest.toString('hex')}`, signature: signature.toString('base64'), signedAt: new Date().toISOString()
+    };
+    return Buffer.from(zipSync({ ...files, [signatureEntryName]: strToU8(JSON.stringify(signatureEntry, null, 2)) }, { level: 6, mtime: new Date('1980-01-01T00:00:00Z') }));
+}
+
+// namespaces: the parsed contents of namespaces.json (or { prefixes: {...} }; pass {} or omit
+// entirely to always get 'unclaimed'/'unsigned' rather than 'verified', e.g. if the caller has
+// no registry available). Returns { status, prefix?, owner?, reason? } and never throws for a
+// well-formed archive -- see the module comment above for why a failure here is a status to
+// display, not an error to propagate.
+export function verifyPackageArchive(archive, { namespaces } = {}) {
+    const { packageManifest, files } = inspectPackageArchive(archive);
+    const packageId = packageManifest.packageId;
+    const reservedPrefix = matchingPrefix(packageId, namespaces?.prefixes);
+    const signatureRaw = files[signatureEntryName];
+    if (!signatureRaw) return { status: reservedPrefix ? 'unsigned' : 'unclaimed', reservedPrefix };
+    let signatureEntry;
+    try {
+        signatureEntry = JSON.parse(strFromU8(signatureRaw));
+    } catch {
+        return { status: 'invalid', reason: 'signature.json is not valid JSON.' };
+    }
+    if (signatureEntry.format !== signatureFormat || signatureEntry.formatVersion !== signatureFormatVersion || signatureEntry.algorithm !== 'ed25519') {
+        return { status: 'invalid', reason: 'The signature format or algorithm is unsupported.' };
+    }
+    if (typeof signatureEntry.prefix !== 'string' || !isPrefixOf(signatureEntry.prefix, packageId)) {
+        return { status: 'invalid', reason: 'The signature claims a prefix that is not a prefix of this package id.' };
+    }
+    const entry = namespaces?.prefixes?.[signatureEntry.prefix];
+    if (!entry) return { status: 'invalid', reason: `"${signatureEntry.prefix}" is not a reserved prefix.`, prefix: signatureEntry.prefix };
+    const filesWithoutSignature = Object.fromEntries(Object.entries(files).filter(([name]) => name !== signatureEntryName));
+    const digest = contentDigest(filesWithoutSignature);
+    if (`sha256:${digest.toString('hex')}` !== signatureEntry.digest) {
+        return { status: 'invalid', reason: 'The signed digest does not match the package contents.', prefix: signatureEntry.prefix };
+    }
+    let signatureBytes;
+    try {
+        signatureBytes = Buffer.from(signatureEntry.signature, 'base64');
+    } catch {
+        return { status: 'invalid', reason: 'The signature is not valid base64.', prefix: signatureEntry.prefix };
+    }
+    const publicKeys = Array.isArray(entry.publicKeys) ? entry.publicKeys : [];
+    const verified = publicKeys.some((pem) => {
+        try {
+            return cryptoVerify(null, digest, createPublicKey(pem), signatureBytes);
+        } catch {
+            return false;
+        }
+    });
+    return verified
+        ? { status: 'verified', prefix: signatureEntry.prefix, owner: entry.owner }
+        : { status: 'invalid', reason: 'The signature does not verify against any registered key for this prefix.', prefix: signatureEntry.prefix };
 }

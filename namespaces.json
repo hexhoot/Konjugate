@@ -1,0 +1,13 @@
+{
+    "format": "konjugate-namespaces",
+    "formatVersion": 1,
+    "prefixes": {
+        "konjugate.fintech": {
+            "owner": "Zenin Easa Panthakkalakath",
+            "contact": "https://github.com/zenineasa",
+            "publicKeys": [
+                "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAYK8mdo2oENjGhnqOoIqmqr/ZFe9SD3rgNdUY8hCG3oA=\n-----END PUBLIC KEY-----\n"
+            ]
+        }
+    }
+}
