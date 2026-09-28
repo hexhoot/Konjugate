@@ -9115,14 +9115,27 @@ async function openExamplesExplorer() {
 let extensionsEntries = null;
 let extensionsTab = 'addon';
 let extensionsSelectedKey = null;
+// Discover mode (see docs/addonExplorer.md): browsing what the registry offers, as opposed to
+// Installed mode's "what's on disk" above. Kept as separate state/render functions rather than
+// folding into the Installed ones, since a registry entry (title/description/license/packages) and
+// an installed package (permissions/enabled state) are different shapes of thing.
+let extensionsMode = 'installed';
+let discoverRegistry = null;
+let discoverEntries = [];
+let discoverStale = false;
+let discoverDomain = 'all';
+let discoverSelectedPrefix = null;
 
 function extensionsPackageKey(entry) {
     return `${entry.packageType}:${entry.packageId}:${entry.version}`;
 }
 
-function showExtensionsNotice(message) {
-    $('#extensionsRestartNotice').textContent = message;
-    $('#extensionsRestartNotice').hidden = false;
+function showExtensionsNotice(message, type = null) {
+    const notice = $('#extensionsRestartNotice');
+    notice.textContent = message;
+    notice.classList.toggle('error', type === 'error');
+    notice.classList.toggle('warning', type === 'warning');
+    notice.hidden = false;
 }
 
 function renderExtensionsResults() {
@@ -9144,6 +9157,7 @@ function renderExtensionsResults() {
 }
 
 function renderExtensionsDetail() {
+    $('#extensionsDiscoverDetailContent').hidden = true;
     const entry = extensionsEntries.find((candidate) => extensionsPackageKey(candidate) === extensionsSelectedKey);
     $('#extensionsDetailEmpty').hidden = Boolean(entry);
     $('#extensionsDetailContent').hidden = !entry;
@@ -9159,14 +9173,204 @@ function renderExtensionsDetail() {
         item.textContent = permission;
         return item;
     }));
+    const bundleEntry = registryBundleFor(entry.packageId);
+    $('#extensionsDetailBundleNote').hidden = !bundleEntry;
+    if (bundleEntry) {
+        const siblingIds = bundleEntry.packages.filter((declared) => declared.packageId !== entry.packageId).map((declared) => declared.packageId).join(', ');
+        $('#extensionsDetailBundleNote').textContent = `Part of the ${bundleEntry.title || bundleEntry.prefix} bundle, along with ${siblingIds}.`;
+    }
     $('#extensionsToggleEnabled').textContent = entry.enabled ? 'Disable' : 'Enable';
     $('#extensionsUninstall').hidden = entry.source === 'bundled';
+}
+
+function isPackageIdInstalled(packageId) {
+    return (extensionsEntries ?? []).some((entry) => entry.packageId === packageId);
+}
+
+// The registry entry (if any) that declares packageId as part of a multi-package bundle -- a
+// single-package entry isn't a bundle, so it's excluded (nothing for it to cross-reference against).
+// Only populated once the registry has actually been fetched (see ensureDiscoverRegistry); returns
+// null rather than fetching on demand, since this is used from Installed-mode rendering/handlers
+// that shouldn't block on a network round trip just to show a cross-reference note.
+function registryBundleFor(packageId) {
+    return discoverEntries.find((entry) => entry.packages.length > 1 && entry.packages.some((declared) => declared.packageId === packageId)) ?? null;
+}
+
+// A human-readable warning if uninstalling/disabling entry would leave an installed bundle sibling
+// without its counterpart (see the Multi-package bundles section of docs/addonExplorer.md) -- null
+// if entry isn't part of a bundle, or its siblings aren't installed anyway.
+function bundleWarningFor(entry, verb) {
+    const bundleEntry = registryBundleFor(entry.packageId);
+    if (!bundleEntry) return null;
+    const installedSiblingIds = bundleEntry.packages
+        .filter((declared) => declared.packageId !== entry.packageId && isPackageIdInstalled(declared.packageId))
+        .map((declared) => declared.packageId);
+    if (!installedSiblingIds.length) return null;
+    return `It's part of the ${bundleEntry.title || bundleEntry.prefix} bundle -- ${verb} it will leave ${installedSiblingIds.join(', ')} without its counterpart.`;
+}
+
+function discoverEntryList(registry) {
+    // Only entries that actually offer something to install belong in the Explorer -- a
+    // reservation-only entry (identity fields but no packages/downloadUrl) is real per the
+    // registry's design but has nothing for a user to discover yet.
+    return Object.entries(registry?.prefixes ?? {})
+        .map(([prefix, entry]) => ({ prefix, ...entry }))
+        .filter((entry) => Array.isArray(entry.packages) && entry.packages.length && entry.downloadUrl);
+}
+
+function renderDiscoverDomains() {
+    const domains = ['all', ...new Set(discoverEntries.map((entry) => entry.domain).filter(Boolean))];
+    $('#extensionsDomains').replaceChildren(...domains.map((domain) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = domain === 'all' ? 'All' : domainLabel(domain);
+        button.classList.toggle('active', domain === discoverDomain);
+        button.addEventListener('click', () => {
+            discoverDomain = domain;
+            $$('#extensionsDomains button').forEach((chip) => chip.classList.toggle('active', chip === button));
+            renderDiscoverResults();
+        });
+        return button;
+    }));
+}
+
+function renderDiscoverResults() {
+    const matches = discoverEntries.filter((entry) => discoverDomain === 'all' || entry.domain === discoverDomain);
+    if (discoverSelectedPrefix && !matches.some((entry) => entry.prefix === discoverSelectedPrefix)) {
+        discoverSelectedPrefix = null;
+        renderDiscoverDetail();
+    }
+    $('#extensionsResults').replaceChildren(...matches.map((entry) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'examplesExplorerItem extensionsItem';
+        button.dataset.discoverPrefix = entry.prefix;
+        button.classList.toggle('selected', entry.prefix === discoverSelectedPrefix);
+        const installedCount = entry.packages.filter((declared) => isPackageIdInstalled(declared.packageId)).length;
+        const allInstalled = installedCount === entry.packages.length;
+        const partialInstalled = installedCount > 0 && !allInstalled;
+        const statusMeta = allInstalled ? ' · Installed' : partialInstalled ? ` · ${installedCount}/${entry.packages.length} Installed` : '';
+        const meta = `${entry.packages.length} ${entry.packages.length === 1 ? 'package' : 'packages'}${statusMeta}`;
+        button.innerHTML = `<b>${escapeHtml(entry.title || entry.prefix)}</b><span class="extensionsItemMeta">${escapeHtml(meta)}</span>`;
+        return button;
+    }));
+    $('#extensionsEmpty').textContent = 'No add-ons match the registry filters.';
+    $('#extensionsEmpty').hidden = matches.length > 0;
+}
+
+function renderDiscoverDetail() {
+    $('#extensionsDetailContent').hidden = true;
+    const entry = discoverEntries.find((candidate) => candidate.prefix === discoverSelectedPrefix);
+    $('#extensionsDetailEmpty').hidden = Boolean(entry);
+    $('#extensionsDiscoverDetailContent').hidden = !entry;
+    if (!entry) return;
+
+    const domainBadge = $('#extensionsDiscoverDetailDomain');
+    if (entry.domain) {
+        domainBadge.hidden = false;
+        domainBadge.textContent = domainLabel(entry.domain);
+    } else {
+        domainBadge.hidden = true;
+    }
+
+    $('#extensionsDiscoverDetailTitle').textContent = entry.title || entry.prefix;
+    $('#extensionsDiscoverDetailDescription').textContent = entry.description || 'No description available.';
+    $('#extensionsDiscoverDetailLicense').textContent = entry.license || 'Not specified';
+
+    const commercialRow = $('#extensionsDiscoverDetailCommercialLicenseRow');
+    if (entry.commercialLicenseUrl) {
+        commercialRow.hidden = false;
+        $('#extensionsDiscoverDetailCommercialLicense').innerHTML = `<a href="#" data-external-url="${escapeHtml(entry.commercialLicenseUrl)}">View license</a>`;
+    } else {
+        commercialRow.hidden = true;
+    }
+
+    $('#extensionsDiscoverDetailOwner').textContent = entry.owner;
+
+    const contactRow = $('#extensionsDiscoverDetailContactRow');
+    if (entry.contact) {
+        contactRow.hidden = false;
+        if (entry.contact.startsWith('http://') || entry.contact.startsWith('https://')) {
+            $('#extensionsDiscoverDetailContact').innerHTML = `<a href="#" data-external-url="${escapeHtml(entry.contact)}">${escapeHtml(entry.contact)}</a>`;
+        } else {
+            $('#extensionsDiscoverDetailContact').textContent = entry.contact;
+        }
+    } else {
+        contactRow.hidden = true;
+    }
+
+    const urlRow = $('#extensionsDiscoverDetailUrlRow');
+    if (entry.url) {
+        urlRow.hidden = false;
+        $('#extensionsDiscoverDetailUrl').innerHTML = `<a href="#" data-external-url="${escapeHtml(entry.url)}">${escapeHtml(entry.url)}</a>`;
+    } else {
+        urlRow.hidden = true;
+    }
+
+    $('#extensionsDiscoverDetailPackages').replaceChildren(...entry.packages.map((declared) => {
+        const item = document.createElement('li');
+        const installed = isPackageIdInstalled(declared.packageId);
+        item.textContent = `${declared.packageType} · ${declared.packageId}${installed ? ' (installed)' : ''}`;
+        return item;
+    }));
+
+    const installedCount = entry.packages.filter((declared) => isPackageIdInstalled(declared.packageId)).length;
+    const allInstalled = installedCount === entry.packages.length;
+    const partialInstalled = installedCount > 0 && !allInstalled;
+    const statusNote = $('#extensionsDiscoverDetailStatus');
+    const installBtn = $('#extensionsDiscoverInstall');
+
+    if (allInstalled) {
+        statusNote.hidden = false;
+        statusNote.textContent = 'All packages in this entry are installed.';
+        installBtn.textContent = 'Installed';
+        installBtn.disabled = true;
+    } else if (partialInstalled) {
+        statusNote.hidden = false;
+        statusNote.textContent = `Partially installed (${installedCount} of ${entry.packages.length} packages on disk).`;
+        installBtn.textContent = 'Install';
+        installBtn.disabled = false;
+    } else {
+        statusNote.hidden = true;
+        installBtn.textContent = 'Install';
+        installBtn.disabled = false;
+    }
 }
 
 async function refreshExtensionsList() {
     extensionsEntries = await window.extensions.list();
     renderExtensionsResults();
     renderExtensionsDetail();
+}
+
+// Pure data fetch, no DOM -- kept separate from loadDiscoverRegistry (below) so Installed mode can
+// populate discoverEntries for bundle cross-referencing (registryBundleFor/bundleWarningFor) without
+// touching any Discover-mode-only element. Cached in discoverRegistry/discoverEntries across calls
+// within one dialog session; pass force:true to bypass that (used when re-entering Discover mode
+// deliberately isn't needed today, but keeps this symmetrical with the old lazy-load behavior).
+async function ensureDiscoverRegistry({ force = false } = {}) {
+    if (discoverRegistry && !force) return;
+    const { registry, stale, staleReason } = await window.extensions.discoverRegistry();
+    discoverRegistry = registry;
+    discoverEntries = discoverEntryList(registry);
+    discoverStale = stale;
+    if (stale) console.warn('Showing a cached registry listing:', staleReason);
+}
+
+async function loadDiscoverRegistry({ force = false } = {}) {
+    try {
+        await ensureDiscoverRegistry({ force });
+        renderDiscoverDomains();
+        renderDiscoverResults();
+        renderDiscoverDetail();
+        $('#extensionsDiscoverStale').hidden = !discoverStale;
+    } catch (error) {
+        console.error(error);
+        $('#extensionsDomains').replaceChildren();
+        $('#extensionsResults').replaceChildren();
+        $('#extensionsEmpty').textContent = `Could not reach the registry: ${error.message}`;
+        $('#extensionsEmpty').hidden = false;
+    }
 }
 
 async function openExtensionsDialog() {
@@ -9176,24 +9380,56 @@ async function openExtensionsDialog() {
         console.error(error);
         return;
     }
+    extensionsMode = 'installed';
     extensionsTab = 'addon';
     extensionsSelectedKey = null;
+    discoverSelectedPrefix = null;
     $('#extensionsRestartNotice').hidden = true;
-    $$('.extensionsTab').forEach((tab) => tab.classList.toggle('active', tab.dataset.extensionsTab === extensionsTab));
+    $('#extensionsDiscoverStale').hidden = true;
+    $$('.extensionsModes .extensionsTab').forEach((mode) => mode.classList.toggle('active', mode.dataset.extensionsMode === extensionsMode));
+    $('#extensionsTabs').hidden = false;
+    $('#extensionsDomains').hidden = true;
+    $$('#extensionsTabs .extensionsTab').forEach((tab) => tab.classList.toggle('active', tab.dataset.extensionsTab === extensionsTab));
     renderExtensionsResults();
     renderExtensionsDetail();
     $('#extensionsDialog').showModal();
+    // Best-effort and non-blocking: the dialog opens immediately against local data, and the
+    // Installed detail pane's bundle cross-reference (registryBundleFor) fills in silently once this
+    // resolves, rather than making every dialog-open wait on a network round trip it doesn't need to
+    // show anything. Failure here just means no bundle info this session -- advisory only, per the
+    // design principles in docs/addonExplorer.md.
+    ensureDiscoverRegistry().then(() => {
+        if (extensionsMode === 'installed') renderExtensionsDetail();
+    }).catch(() => {});
 }
 
-$$('.extensionsTab').forEach((tab) => tab.addEventListener('click', () => {
+$$('.extensionsModes .extensionsTab').forEach((modeButton) => modeButton.addEventListener('click', () => {
+    extensionsMode = modeButton.dataset.extensionsMode;
+    $$('.extensionsModes .extensionsTab').forEach((candidate) => candidate.classList.toggle('active', candidate === modeButton));
+    $('#extensionsTabs').hidden = extensionsMode !== 'installed';
+    $('#extensionsDomains').hidden = extensionsMode !== 'discover';
+    extensionsSelectedKey = null;
+    discoverSelectedPrefix = null;
+    if (extensionsMode === 'discover') loadDiscoverRegistry();
+    else { renderExtensionsResults(); renderExtensionsDetail(); }
+}));
+
+$$('#extensionsTabs .extensionsTab').forEach((tab) => tab.addEventListener('click', () => {
     extensionsTab = tab.dataset.extensionsTab;
     extensionsSelectedKey = null;
-    $$('.extensionsTab').forEach((candidate) => candidate.classList.toggle('active', candidate === tab));
+    $$('#extensionsTabs .extensionsTab').forEach((candidate) => candidate.classList.toggle('active', candidate === tab));
     renderExtensionsResults();
     renderExtensionsDetail();
 }));
 
 $('#extensionsResults').addEventListener('click', (event) => {
+    const discoverButton = event.target.closest('[data-discover-prefix]');
+    if (discoverButton) {
+        discoverSelectedPrefix = discoverButton.dataset.discoverPrefix;
+        $$('#extensionsResults .extensionsItem').forEach((item) => item.classList.toggle('selected', item === discoverButton));
+        renderDiscoverDetail();
+        return;
+    }
     const button = event.target.closest('[data-package-key]');
     if (!button) return;
     extensionsSelectedKey = button.dataset.packageKey;
@@ -9205,10 +9441,14 @@ $('#extensionsInstall').addEventListener('click', async () => {
     try {
         const installed = await window.extensions.install();
         if (!installed) return;
+        extensionsMode = 'installed';
         extensionsTab = installed.packageType;
         extensionsSelectedKey = `${installed.packageType}:${installed.packageId}:${installed.version}`;
         await refreshExtensionsList();
-        $$('.extensionsTab').forEach((tab) => tab.classList.toggle('active', tab.dataset.extensionsTab === extensionsTab));
+        $$('.extensionsModes .extensionsTab').forEach((mode) => mode.classList.toggle('active', mode.dataset.extensionsMode === extensionsMode));
+        $('#extensionsTabs').hidden = false;
+        $('#extensionsDomains').hidden = true;
+        $$('#extensionsTabs .extensionsTab').forEach((tab) => tab.classList.toggle('active', tab.dataset.extensionsTab === extensionsTab));
         renderExtensionsResults();
         renderExtensionsDetail();
         showExtensionsNotice(installed.packageType === 'fmu'
@@ -9219,9 +9459,48 @@ $('#extensionsInstall').addEventListener('click', async () => {
     }
 });
 
+$('#extensionsDiscoverInstall').addEventListener('click', async () => {
+    const entry = discoverEntries.find((candidate) => candidate.prefix === discoverSelectedPrefix);
+    if (!entry) return;
+    const installBtn = $('#extensionsDiscoverInstall');
+    installBtn.disabled = true;
+    installBtn.textContent = 'Installing…';
+    const verificationLabel = { verified: 'verified', unsigned: 'unsigned', unclaimed: 'unclaimed publisher', invalid: 'signature invalid -- proceed with caution' };
+    try {
+        const results = await window.extensions.installFromRegistry(entry, discoverRegistry);
+        await refreshExtensionsList();
+        renderDiscoverResults();
+        renderDiscoverDetail();
+        const summary = results.map((result) => `${result.packageId} ${result.version} (${verificationLabel[result.verification.status] ?? result.verification.status})`).join(', ');
+        const hasInvalid = results.some((r) => r.verification?.status === 'invalid');
+        showExtensionsNotice(
+            `Installed ${summary}. Restart Konjugate to activate it.`,
+            hasInvalid ? 'warning' : null
+        );
+    } catch (error) {
+        showExtensionsNotice(`Installation failed: ${error.message}`, 'error');
+        renderDiscoverDetail();
+    }
+});
+
+$('#extensionsDiscoverDetailContent').addEventListener('click', (event) => {
+    const link = event.target.closest('[data-external-url]');
+    if (link) {
+        event.preventDefault();
+        window.extensions?.openRegistryLink?.(link.dataset.externalUrl);
+    }
+});
+
 $('#extensionsToggleEnabled').addEventListener('click', async () => {
     const entry = extensionsEntries.find((candidate) => extensionsPackageKey(candidate) === extensionsSelectedKey);
     if (!entry) return;
+    // Disabling gets the identical warning uninstalling does, not a lighter touch just because it's
+    // reversible -- a project needing both bundle halves fails to resolve the same way either way
+    // (see the Multi-package bundles section of docs/addonExplorer.md). Enabling never needs it.
+    if (entry.enabled) {
+        const bundleWarning = bundleWarningFor(entry, 'disabling');
+        if (bundleWarning && !window.confirm(`Disable ${entry.name} ${entry.version}? ${bundleWarning}`)) return;
+    }
     try {
         await window.extensions.setEnabled(entry.packageType, entry.packageId, entry.version, !entry.enabled);
         const verb = entry.enabled ? 'Disabled' : 'Enabled';
@@ -9235,7 +9514,11 @@ $('#extensionsToggleEnabled').addEventListener('click', async () => {
 $('#extensionsUninstall').addEventListener('click', async () => {
     const entry = extensionsEntries.find((candidate) => extensionsPackageKey(candidate) === extensionsSelectedKey);
     if (!entry) return;
-    if (!window.confirm(`Uninstall ${entry.name} ${entry.version}? This cannot be undone.`)) return;
+    const bundleWarning = bundleWarningFor(entry, 'uninstalling');
+    const question = bundleWarning
+        ? `Uninstall ${entry.name} ${entry.version}? ${bundleWarning} This cannot be undone.`
+        : `Uninstall ${entry.name} ${entry.version}? This cannot be undone.`;
+    if (!window.confirm(question)) return;
     try {
         await window.extensions.uninstall(entry.packageType, entry.packageId, entry.version);
         extensionsSelectedKey = null;

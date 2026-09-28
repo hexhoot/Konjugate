@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -13,6 +13,7 @@ import {
     inspectPackageArchive,
     installPackageArchive,
     listInstalledPackages,
+    loadNamespaceRegistry,
     PackageArchiveError,
     signPackageArchive,
     uninstallPackage,
@@ -282,7 +283,7 @@ test('a launcher package must contain every file its manifest declares', () => {
     }
 });
 
-// ---- Publisher signing (see docs/namespaces.md) ----------------------------------------------------
+// ---- Publisher signing (see docs/registry.md) ----------------------------------------------------
 
 function pem(keyObject, type) {
     return keyObject.export({ type, format: 'pem' }).toString();
@@ -380,4 +381,102 @@ test('the longest matching reserved prefix wins', () => {
     };
     // Unsigned: reservedPrefix should resolve to the more specific "example.helloWorld", not "example".
     assert.equal(verifyPackageArchive(addonArchive(), { namespaces }).reservedPrefix, 'example.helloWorld');
+});
+
+// ---- Registry (see docs/registry.md) -----------------------------------------------------------
+
+async function withRegistry(files, task) {
+    const directory = await mkdtemp(join(tmpdir(), 'konjugate-registry-'));
+    try {
+        for (const [name, content] of Object.entries(files)) await writeFile(join(directory, name), content);
+        return await task(directory);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+}
+
+const minimalEntry = (overrides = {}) => JSON.stringify({
+    format: 'konjugate-namespace-entry', formatVersion: 1,
+    owner: 'Example Org', contact: 'https://example.org', publicKeys: ['-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----\n'],
+    ...overrides
+});
+
+test('loadNamespaceRegistry reads a minimal, identity-only entry keyed by its file name', async () => {
+    await withRegistry({ 'example.fintech.json': minimalEntry() }, async (directory) => {
+        const { prefixes } = await loadNamespaceRegistry(directory);
+        assert.deepEqual(Object.keys(prefixes), ['example.fintech']);
+        assert.equal(prefixes['example.fintech'].owner, 'Example Org');
+    });
+});
+
+test('loadNamespaceRegistry reads every discovery field when present', async () => {
+    const full = minimalEntry({
+        title: 'Example', description: 'An example.', license: 'MIT', domain: 'finance',
+        url: 'https://example.org/repo', downloadUrl: 'https://example.org/latest.zip',
+        packages: [{ packageType: 'plugin', packageId: 'example.fintech.engine' }, { packageType: 'addon', packageId: 'example.fintech.toolbox' }]
+    });
+    await withRegistry({ 'example.fintech.json': full }, async (directory) => {
+        const { prefixes } = await loadNamespaceRegistry(directory);
+        assert.equal(prefixes['example.fintech'].title, 'Example');
+        assert.equal(prefixes['example.fintech'].packages.length, 2);
+    });
+});
+
+test('loadNamespaceRegistry combines multiple entries and ignores non-JSON files', async () => {
+    await withRegistry({
+        'example.fintech.json': minimalEntry(),
+        'example.robotics.json': minimalEntry({ owner: 'Other Org' }),
+        'ReadMe.md': '# not a registry entry'
+    }, async (directory) => {
+        const { prefixes } = await loadNamespaceRegistry(directory);
+        assert.deepEqual(Object.keys(prefixes).sort(), ['example.fintech', 'example.robotics']);
+    });
+});
+
+test('loadNamespaceRegistry rejects a file name that is not a valid prefix', async () => {
+    await withRegistry({ '1bad-name.json': minimalEntry() }, async (directory) => {
+        await assert.rejects(() => loadNamespaceRegistry(directory), (error) => error instanceof PackageArchiveError && error.code === 'INVALID_PREFIX');
+    });
+});
+
+test('loadNamespaceRegistry rejects an entry missing a required identity field', async () => {
+    for (const missing of ['owner', 'contact', 'publicKeys']) {
+        const entry = JSON.parse(minimalEntry());
+        delete entry[missing];
+        await withRegistry({ 'example.fintech.json': JSON.stringify(entry) }, async (directory) => {
+            await assert.rejects(() => loadNamespaceRegistry(directory),
+                (error) => error instanceof PackageArchiveError && error.code === 'INVALID_REGISTRY_ENTRY', `missing ${missing}`);
+        });
+    }
+});
+
+test('loadNamespaceRegistry rejects an unsupported format/formatVersion', async () => {
+    await withRegistry({ 'example.fintech.json': minimalEntry({ formatVersion: 2 }) }, async (directory) => {
+        await assert.rejects(() => loadNamespaceRegistry(directory), (error) => error instanceof PackageArchiveError && error.code === 'INVALID_REGISTRY_ENTRY');
+    });
+});
+
+test('loadNamespaceRegistry rejects a package id that is not under the entry\'s own prefix', async () => {
+    const entry = minimalEntry({ packages: [{ packageType: 'plugin', packageId: 'someone.else.engine' }] });
+    await withRegistry({ 'example.fintech.json': entry }, async (directory) => {
+        await assert.rejects(() => loadNamespaceRegistry(directory),
+            (error) => error instanceof PackageArchiveError && error.code === 'INVALID_REGISTRY_ENTRY' && /not under this entry's own prefix/.test(error.message));
+    });
+});
+
+test('loadNamespaceRegistry rejects an invalid packageType', async () => {
+    const entry = minimalEntry({ packages: [{ packageType: 'library', packageId: 'example.fintech.engine' }] });
+    await withRegistry({ 'example.fintech.json': entry }, async (directory) => {
+        await assert.rejects(() => loadNamespaceRegistry(directory), (error) => error instanceof PackageArchiveError && error.code === 'INVALID_REGISTRY_ENTRY');
+    });
+});
+
+test('a package signed under a prefix loaded from a real registry directory verifies end to end', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const entry = minimalEntry({ publicKeys: [pem(publicKey, 'spki')] });
+    await withRegistry({ 'example.json': entry }, async (directory) => {
+        const namespaces = await loadNamespaceRegistry(directory);
+        const signed = signPackageArchive(addonArchive(), { privateKey: pem(privateKey, 'pkcs8'), prefix: 'example' });
+        assert.equal(verifyPackageArchive(signed, { namespaces }).status, 'verified');
+    });
 });

@@ -64,13 +64,13 @@ Package installation itself does not execute package code — that stays true. A
 
 ## Signing
 
-Unsigned packages install and run exactly as signed ones do — publisher signing (see [docs/namespaces.md](namespaces.md)) is a trust signal, never an install-time gate, so nothing here shows an unsigned package differently by default. `signPackageArchive`/`verifyPackageArchive` in [src/packageArchive.mjs](../src/packageArchive.mjs) cover the canonical manifest, every normalized file path and every file hash, per a namespace prefix reserved in [namespaces.json](../namespaces.json) — matching what this section used to describe as a future direction. Platform application signing (notarization, code-signing certificates — see [docs/packageManagerDistribution.md](packageManagerDistribution.md)) and this package-content publisher signing are still separate trust layers: Konjugate itself ships unsigned at the OS level today, independent of whether an individual `.kja`/`.kjp` a user installs is publisher-signed.
+Unsigned packages install and run exactly as signed ones do — publisher signing (see [docs/registry.md](registry.md)) is a trust signal, never an install-time gate, so nothing here shows an unsigned package differently by default. `signPackageArchive`/`verifyPackageArchive` in [src/packageArchive.mjs](../src/packageArchive.mjs) cover the canonical manifest, every normalized file path and every file hash, per a namespace prefix reserved in [`registry/`](../registry/) — matching what this section used to describe as a future direction. Platform application signing (notarization, code-signing certificates — see [docs/packageManagerDistribution.md](packageManagerDistribution.md)) and this package-content publisher signing are still separate trust layers: Konjugate itself ships unsigned at the OS level today, independent of whether an individual `.kja`/`.kjp` a user installs is publisher-signed.
 
 ## Build a package
 
-The package archive core is implemented in [src/packageArchive.mjs](../src/packageArchive.mjs). The repository's Hello World add-on is the smallest source contribution to package next:
+The package archive core is implemented in [src/packageArchive.mjs](../src/packageArchive.mjs). [Konjugate-HelloWorld](https://github.com/zenineasa/Konjugate-HelloWorld) is the smallest real example of a packaged add-on to start from -- its own `scripts/build.mjs` already does steps 3-4 below:
 
-1. Copy [addons/helloWorld](../addons/helloWorld/).
+1. Clone [Konjugate-HelloWorld](https://github.com/zenineasa/Konjugate-HelloWorld).
 2. Give it a new globally unique add-on ID.
 3. Add a shared `package.json` with `packageType: "addon"`.
 4. Include the contribution files in the archive.

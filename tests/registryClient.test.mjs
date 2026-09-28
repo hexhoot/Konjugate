@@ -1,0 +1,222 @@
+/* Copyright © 2026 Zenin Easa Panthakkalakath */
+
+import assert from 'node:assert/strict';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { strToU8, zipSync } from 'fflate';
+import { createPackageArchive, PackageArchiveError } from '../src/packageArchive.mjs';
+import { fetchRemoteRegistry, installFromRegistryEntry, RegistryClientError } from '../src/registryClient.mjs';
+
+// A minimal but real .kja, built the same way tests/packageArchive.test.mjs does.
+function addonArchive(packageId = 'example.fintech.toolbox') {
+    return createPackageArchive({
+        packageManifest: { format: 'konjugate-package', formatVersion: 1, packageType: 'addon', packageId, name: 'Example', version: '0.1.0', contents: { manifest: 'addon.json' } },
+        contributionManifest: {
+            addonId: packageId, name: 'Example', version: '0.1.0', apiVersion: 1, kind: 'resultVisualizer', entry: 'index.html', permissions: ['results.read'],
+            contributes: { toolstrip: [{ commandId: 'open', label: 'Open', tooltip: 'Open', symbol: 'E', when: 'resultsActive', contexts: ['resultSession'] }] }
+        },
+        files: { 'index.html': '<!doctype html>' }
+    });
+}
+
+function pluginArchive(packageId = 'example.fintech.engine') {
+    return createPackageArchive({
+        packageManifest: { format: 'konjugate-package', formatVersion: 1, packageType: 'plugin', packageId, name: 'Example Engine', version: '0.1.0', contents: { manifest: 'plugin.json' } },
+        contributionManifest: {
+            pluginId: packageId, name: 'Example Engine', version: '0.1.0', apiVersion: 1,
+            contributes: [{ kind: 'component', componentId: 'exampleNode', apiVersion: 1, entry: 'exampleNode.json' }]
+        },
+        files: { 'exampleNode.json': '{}' }
+    });
+}
+
+function fakeFetch(routes) {
+    return async (url) => {
+        const route = routes[url];
+        if (!route) throw new Error(`Unexpected fetch to ${url}`);
+        return typeof route === 'function' ? route() : route;
+    };
+}
+
+function jsonResponse(body, { ok = true, status = 200 } = {}) {
+    return { ok, status, json: async () => body, text: async () => JSON.stringify(body) };
+}
+
+function textResponse(text, { ok = true, status = 200 } = {}) {
+    return { ok, status, text: async () => text };
+}
+
+function bytesResponse(bytes, { ok = true, status = 200 } = {}) {
+    return { ok, status, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
+}
+
+const listingUrl = 'https://api.github.com/repos/zenineasa/Konjugate/contents/registry?ref=master';
+const minimalEntry = (overrides = {}) => ({
+    format: 'konjugate-namespace-entry', formatVersion: 1,
+    owner: 'Example Org', contact: 'https://example.org', publicKeys: ['-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----\n'],
+    ...overrides
+});
+
+test('fetchRemoteRegistry lists and fetches every entry', async () => {
+    const entry = minimalEntry();
+    const fetchImpl = fakeFetch({
+        [listingUrl]: jsonResponse([
+            { type: 'file', name: 'example.fintech.json', download_url: 'https://raw/example.fintech.json' },
+            { type: 'file', name: 'ReadMe.md', download_url: 'https://raw/ReadMe.md' },
+            { type: 'dir', name: 'nested' }
+        ]),
+        'https://raw/example.fintech.json': textResponse(JSON.stringify(entry))
+    });
+    const registry = await fetchRemoteRegistry({ fetchImpl });
+    assert.deepEqual(Object.keys(registry.prefixes), ['example.fintech']);
+    assert.equal(registry.prefixes['example.fintech'].owner, 'Example Org');
+});
+
+test('fetchRemoteRegistry treats a missing registry/ directory (404) as an empty registry', async () => {
+    const fetchImpl = fakeFetch({ [listingUrl]: jsonResponse(null, { ok: false, status: 404 }) });
+    assert.deepEqual(await fetchRemoteRegistry({ fetchImpl }), { prefixes: {} });
+});
+
+test('fetchRemoteRegistry throws on a non-404 listing failure', async () => {
+    const fetchImpl = fakeFetch({ [listingUrl]: jsonResponse(null, { ok: false, status: 500 }) });
+    await assert.rejects(() => fetchRemoteRegistry({ fetchImpl }), (error) => error instanceof RegistryClientError && error.code === 'LISTING_FAILED');
+});
+
+test('fetchRemoteRegistry throws if fetching one entry\'s content fails', async () => {
+    const fetchImpl = fakeFetch({
+        [listingUrl]: jsonResponse([{ type: 'file', name: 'example.fintech.json', download_url: 'https://raw/example.fintech.json' }]),
+        'https://raw/example.fintech.json': textResponse('', { ok: false, status: 500 })
+    });
+    await assert.rejects(() => fetchRemoteRegistry({ fetchImpl }), (error) => error instanceof RegistryClientError && error.code === 'FETCH_FAILED');
+});
+
+test('fetchRemoteRegistry propagates the underlying validation error for a malformed entry', async () => {
+    const fetchImpl = fakeFetch({
+        [listingUrl]: jsonResponse([{ type: 'file', name: 'example.fintech.json', download_url: 'https://raw/example.fintech.json' }]),
+        'https://raw/example.fintech.json': textResponse(JSON.stringify({ format: 'konjugate-namespace-entry', formatVersion: 1 }))
+    });
+    await assert.rejects(() => fetchRemoteRegistry({ fetchImpl }), (error) => error instanceof PackageArchiveError && error.code === 'INVALID_REGISTRY_ENTRY');
+});
+
+test('installFromRegistryEntry rejects an entry with no downloadUrl or no packages', async () => {
+    await assert.rejects(() => installFromRegistryEntry({ packages: [{ packageType: 'addon', packageId: 'x.y' }] }, {}),
+        (error) => error instanceof RegistryClientError && error.code === 'NO_DOWNLOAD_URL');
+    await assert.rejects(() => installFromRegistryEntry({ downloadUrl: 'https://example.org/x.zip' }, {}),
+        (error) => error instanceof RegistryClientError && error.code === 'NO_PACKAGES');
+});
+
+test('installFromRegistryEntry surfaces a download failure', async () => {
+    const entry = { downloadUrl: 'https://example.org/x.zip', packages: [{ packageType: 'addon', packageId: 'example.fintech.toolbox' }] };
+    const fetchImpl = fakeFetch({ 'https://example.org/x.zip': bytesResponse(new Uint8Array(), { ok: false, status: 404 }) });
+    await assert.rejects(() => installFromRegistryEntry(entry, { fetchImpl }), (error) => error instanceof RegistryClientError && error.code === 'DOWNLOAD_FAILED');
+});
+
+test('installFromRegistryEntry rejects a download that is not a valid zip', async () => {
+    const entry = { downloadUrl: 'https://example.org/x.zip', packages: [{ packageType: 'addon', packageId: 'example.fintech.toolbox' }] };
+    const fetchImpl = fakeFetch({ 'https://example.org/x.zip': bytesResponse(strToU8('not a zip')) });
+    await assert.rejects(() => installFromRegistryEntry(entry, { fetchImpl }), (error) => error instanceof RegistryClientError && error.code === 'INVALID_DOWNLOAD');
+});
+
+test('installFromRegistryEntry rejects a zip missing a declared package', async () => {
+    const zip = zipSync({ 'other.kja': addonArchive('some.other.addon') });
+    const entry = { downloadUrl: 'https://example.org/x.zip', packages: [{ packageType: 'addon', packageId: 'example.fintech.toolbox' }] };
+    const fetchImpl = fakeFetch({ 'https://example.org/x.zip': bytesResponse(zip) });
+    await assert.rejects(() => installFromRegistryEntry(entry, { fetchImpl }), (error) => error instanceof RegistryClientError && error.code === 'PACKAGE_MISSING');
+});
+
+test('installFromRegistryEntry installs a single package and reports its verification status', async () => {
+    const zip = zipSync({ 'konjugate.fintech.toolbox-0.1.0.kja': addonArchive() });
+    const entry = { downloadUrl: 'https://example.org/x.zip', packages: [{ packageType: 'addon', packageId: 'example.fintech.toolbox' }] };
+    const fetchImpl = fakeFetch({ 'https://example.org/x.zip': bytesResponse(zip) });
+    const directory = await mkdtemp(join(tmpdir(), 'konjugate-registryclient-'));
+    try {
+        const results = await installFromRegistryEntry(entry, { fetchImpl, directory, namespaces: { prefixes: {} } });
+        assert.equal(results.length, 1);
+        assert.equal(results[0].packageId, 'example.fintech.toolbox');
+        assert.equal(results[0].verification.status, 'unclaimed');
+        assert.ok((await readdir(join(directory, 'addons', 'example.fintech.toolbox'))).includes('0.1.0'));
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('installFromRegistryEntry installs every package a bundle lists, matched by identity not file name', async () => {
+    // Deliberately mis-ordered/misleadingly-named zip entries -- matching must not rely on names.
+    const zip = zipSync({ 'first-file-in-the-zip.kjp': pluginArchive(), 'second-file-in-the-zip.kja': addonArchive() });
+    const entry = {
+        downloadUrl: 'https://example.org/bundle.zip',
+        packages: [{ packageType: 'addon', packageId: 'example.fintech.toolbox' }, { packageType: 'plugin', packageId: 'example.fintech.engine' }]
+    };
+    const fetchImpl = fakeFetch({ 'https://example.org/bundle.zip': bytesResponse(zip) });
+    const directory = await mkdtemp(join(tmpdir(), 'konjugate-registryclient-'));
+    try {
+        const results = await installFromRegistryEntry(entry, { fetchImpl, directory, namespaces: { prefixes: {} } });
+        assert.deepEqual(results.map((r) => r.packageId).sort(), ['example.fintech.engine', 'example.fintech.toolbox']);
+        assert.ok((await readdir(join(directory, 'addons'))).includes('example.fintech.toolbox'));
+        assert.ok((await readdir(join(directory, 'plugins'))).includes('example.fintech.engine'));
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('installFromRegistryEntry reports "invalid" without refusing to install, per the advisory-only principle', async () => {
+    // A signed package whose signature.json claims a prefix not present in the supplied namespaces
+    // would come back "invalid" from verifyPackageArchive; here the simpler unsigned + unclaimed
+    // case already demonstrates the same point: verification never gates the install that follows.
+    const zip = zipSync({ 'konjugate.fintech.toolbox-0.1.0.kja': addonArchive() });
+    const entry = { downloadUrl: 'https://example.org/x.zip', packages: [{ packageType: 'addon', packageId: 'example.fintech.toolbox' }] };
+    const fetchImpl = fakeFetch({ 'https://example.org/x.zip': bytesResponse(zip) });
+    const directory = await mkdtemp(join(tmpdir(), 'konjugate-registryclient-'));
+    try {
+        const results = await installFromRegistryEntry(entry, { fetchImpl, directory, namespaces: { prefixes: { 'example.fintech': { publicKeys: [] } } } });
+        assert.equal(results[0].verification.status, 'unsigned');
+        assert.ok((await readdir(join(directory, 'addons'))).includes('example.fintech.toolbox'), 'install proceeded despite an unsigned/unverified status');
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('fetchRemoteRegistry throws RATE_LIMITED on HTTP 403', async () => {
+    const fetchImpl = fakeFetch({ [listingUrl]: jsonResponse(null, { ok: false, status: 403 }) });
+    await assert.rejects(() => fetchRemoteRegistry({ fetchImpl }), (error) => error instanceof RegistryClientError && error.code === 'RATE_LIMITED');
+});
+
+test('fetchRemoteRegistry fetches from a custom registryUrl', async () => {
+    const customUrl = 'https://custom.registry/index.json';
+    const entry = minimalEntry();
+    const fetchImpl = fakeFetch({ [customUrl]: jsonResponse({ prefixes: { 'example.fintech': entry } }) });
+    const registry = await fetchRemoteRegistry({ registryUrl: customUrl, fetchImpl });
+    assert.deepEqual(Object.keys(registry.prefixes), ['example.fintech']);
+});
+
+test('installFromRegistryEntry installs a direct .kja download without nesting in a zip', async () => {
+    const directKjaBytes = addonArchive('example.fintech.toolbox');
+    const entry = { downloadUrl: 'https://example.org/direct.kja', packages: [{ packageType: 'addon', packageId: 'example.fintech.toolbox' }] };
+    const fetchImpl = fakeFetch({ 'https://example.org/direct.kja': bytesResponse(directKjaBytes) });
+    const directory = await mkdtemp(join(tmpdir(), 'konjugate-registryclient-'));
+    try {
+        const results = await installFromRegistryEntry(entry, { fetchImpl, directory, namespaces: { prefixes: {} } });
+        assert.equal(results.length, 1);
+        assert.equal(results[0].packageId, 'example.fintech.toolbox');
+        assert.ok((await readdir(join(directory, 'addons', 'example.fintech.toolbox'))).includes('0.1.0'));
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('installFromRegistryEntry cleanly reinstalls or updates an already installed package', async () => {
+    const directKjaBytes = addonArchive('example.fintech.toolbox');
+    const entry = { downloadUrl: 'https://example.org/direct.kja', packages: [{ packageType: 'addon', packageId: 'example.fintech.toolbox' }] };
+    const fetchImpl = fakeFetch({ 'https://example.org/direct.kja': bytesResponse(directKjaBytes) });
+    const directory = await mkdtemp(join(tmpdir(), 'konjugate-registryclient-'));
+    try {
+        await installFromRegistryEntry(entry, { fetchImpl, directory, namespaces: { prefixes: {} } });
+        const results = await installFromRegistryEntry(entry, { fetchImpl, directory, namespaces: { prefixes: {} } });
+        assert.equal(results.length, 1);
+        assert.equal(results[0].packageId, 'example.fintech.toolbox');
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});

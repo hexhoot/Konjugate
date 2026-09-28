@@ -34,7 +34,8 @@ contextBridge.exposeInMainWorld('windowControls', {
 
 contextBridge.exposeInMainWorld('applicationInfo', {
     get: () => ipcRenderer.invoke('applicationInfo'),
-    openWelcome: () => ipcRenderer.invoke('applicationOpenWelcome')
+    openWelcome: () => ipcRenderer.invoke('applicationOpenWelcome'),
+    openExternal: (url) => ipcRenderer.invoke('applicationOpenExternal', url)
 });
 
 contextBridge.exposeInMainWorld('diagnostics', {
@@ -65,7 +66,14 @@ contextBridge.exposeInMainWorld('extensions', {
     list: () => ipcRenderer.invoke('packageList'),
     install: () => ipcRenderer.invoke('packageInstall'),
     uninstall: (packageType, packageId, version) => ipcRenderer.invoke('packageUninstall', { packageType, packageId, version }),
-    setEnabled: (packageType, packageId, version, enabled) => ipcRenderer.invoke('packageSetEnabled', { packageType, packageId, version, enabled })
+    setEnabled: (packageType, packageId, version, enabled) => ipcRenderer.invoke('packageSetEnabled', { packageType, packageId, version, enabled }),
+    // The Explorer's "Discover" side (see docs/addonExplorer.md).
+    discoverRegistry: () => ipcRenderer.invoke('packageDiscoverRegistry'),
+    installFromRegistry: (entry, namespaces) => ipcRenderer.invoke('packageInstallFromRegistry', { entry, namespaces }),
+    // Separate from applicationInfo.openExternal's fixed allowlist -- a registry entry's own links
+    // point at whatever a third-party publisher declared, so this confirms with the person first
+    // instead (see the matching handler in src/main.mjs).
+    openRegistryLink: (url) => ipcRenderer.invoke('packageOpenRegistryLink', url)
 });
 
 contextBridge.exposeInMainWorld('shapeLibrary', {

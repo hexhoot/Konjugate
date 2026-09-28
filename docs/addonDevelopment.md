@@ -45,7 +45,7 @@ The user-data location follows the operating system. It is normally beneath `~/L
 
 During source development, placing the directory under the repository's `addons/` directory installs it as a bundled add-on.
 
-The repository includes a minimal working example in [Hello World add-on](helloWorldAddon.md). Start there before building a larger visualizer or dashboard.
+A minimal working example lives in its own repository, walked through in [Hello World add-on](helloWorldAddon.md). Start there before building a larger visualizer or dashboard.
 
 For end users, package the add-on as a `.kja` file and use the application's installer. See [Konjugate packages](packageDevelopment.md) for the portable package layout and safety checks.
 

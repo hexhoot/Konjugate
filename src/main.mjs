@@ -35,7 +35,8 @@ import { guideKindSuffix } from './exampleGuide/guideKind.mjs';
 import { auxiliaryWindowPresentation, auxiliaryWindowBounds } from './windowLifecycle.mjs';
 import { parseKjtPathFromArgv } from './fileAssociation.mjs';
 import { listDiagnostics, onDiagnostic, recordDiagnostic } from './diagnosticsLog.mjs';
-import { inspectPackageArchive, installPackageArchive, listInstalledPackages, packageKey, uninstallPackage } from './packageArchive.mjs';
+import { inspectPackageArchive, installPackageArchive, listInstalledPackages, loadNamespaceRegistry, packageKey, uninstallPackage } from './packageArchive.mjs';
+import { fetchRemoteRegistry, installFromRegistryEntry } from './registryClient.mjs';
 import { inspectFmuArchive, installFmuArchive, listInstalledFmus, uninstallFmu } from './fmuPackage.mjs';
 import { createExtensionStateStore } from './extensionStateStore.mjs';
 import { exampleCatalogEntry, exampleIdFromFileName, exampleLabel } from './exampleCatalog.mjs';
@@ -589,19 +590,6 @@ function beginApplicationShutdown() {
 
 function visualizerCan(manifest, permission) {
     return manifest?.permissions.includes(permission);
-}
-
-// Hello World ships disabled out of the box, but only for a brand-new userData directory --
-// extensionStateStore's own first-run-only seeding is what keeps a later re-enable sticky.
-// Derived from the live bundled manifest rather than a hardcoded version string, so a future
-// version bump to this add-on doesn't silently stop matching.
-async function defaultDisabledExtensionKeys() {
-    try {
-        const manifest = JSON.parse(await readFile(join(currentDir, '..', 'addons', 'helloWorld', 'addon.json'), 'utf8'));
-        return [packageKey('addon', manifest.addonId, manifest.version)];
-    } catch {
-        return [];
-    }
 }
 
 async function discoverAddons() {
@@ -1236,6 +1224,104 @@ ipcMain.handle('packageSetEnabled', async (_event, { packageType, packageId, ver
     return { packageType, packageId, version, enabled };
 });
 
+// A registry entry's own project/commercial-license/contact links (see docs/addonExplorer.md) point
+// at whatever a third-party publisher declared -- they will not match allowedExternalLinkPrefixes
+// above (that allowlist is for Konjugate's own trusted domains only), and loosening it to cover an
+// open, permissionless registry would defeat its purpose. Instead: any https:// URL is allowed, but
+// only after the person confirms leaving Konjugate for a destination the registry entry chose, not
+// this app -- the same pattern VS Code uses for an extension's own links (see The Addon Explorer's
+// design principles for why that precedent already grounds this feature).
+ipcMain.handle('packageOpenRegistryLink', async (event, url) => {
+    if (typeof url !== 'string' || !url.startsWith('https://')) return false;
+    const confirmation = await dialog.showMessageBox(getWindowFromEvent(event), {
+        type: 'question',
+        buttons: ['Cancel', 'Open'],
+        defaultId: 1,
+        cancelId: 0,
+        title: 'Open external link',
+        message: 'Open this link in your browser?',
+        detail: `${url}\n\nThis comes from a third-party registry listing, not from Konjugate itself.`
+    });
+    if (confirmation.response !== 1) return false;
+    shell.openExternal(url);
+    return true;
+});
+
+// The Explorer's "Discover" side (see docs/addonExplorer.md). A local cache means the Explorer
+// still shows a (stale-but-present) list offline or if GitHub's API is briefly unreachable, rather
+// than an empty/broken screen -- the renderer is told stale:true so it can say so.
+const registryCachePath = () => join(app.getPath('userData'), 'registryCache.json');
+const bundledRegistryDir = join(currentDir, '..', 'registry');
+async function loadBundledRegistry() {
+    try {
+        return await loadNamespaceRegistry(bundledRegistryDir);
+    } catch {
+        return { prefixes: {} };
+    }
+}
+
+ipcMain.handle('packageDiscoverRegistry', async () => {
+    const bundled = await loadBundledRegistry();
+    try {
+        const remote = await fetchRemoteRegistry();
+        const registry = {
+            prefixes: { ...bundled.prefixes, ...(remote.prefixes ?? {}) }
+        };
+        const temporaryPath = `${registryCachePath()}.${randomUUID()}.tmp`;
+        await writeFile(temporaryPath, JSON.stringify(registry));
+        await rename(temporaryPath, registryCachePath());
+        return { registry, stale: false };
+    } catch (error) {
+        try {
+            const cached = JSON.parse(await readFile(registryCachePath(), 'utf8'));
+            const registry = {
+                prefixes: { ...bundled.prefixes, ...(cached.prefixes ?? {}) }
+            };
+            return { registry, stale: true, staleReason: error.message };
+        } catch {
+            if (Object.keys(bundled.prefixes).length > 0) {
+                return { registry: bundled, stale: true, staleReason: error.message };
+            }
+            throw error;
+        }
+    }
+});
+
+// entry comes from whatever packageDiscoverRegistry last returned to this renderer -- not
+// re-fetched here, so what gets installed is exactly what the user saw when they clicked Install,
+// and installing doesn't cost a second round trip to GitHub for data already in hand. One click
+// installs every package a bundle entry lists (see the Multi-package bundles section of
+// docs/addonExplorer.md); nothing here shows a confirmation dialog first the way manual
+// packageInstall does -- the Explorer's own detail pane, showing what it does before the click, is
+// that review, matching how a marketplace install normally works.
+//
+// namespaces for verifyPackageArchive, though, is NOT taken from the renderer -- verification only
+// means something if the public keys it checks against come from a source the renderer can't
+// control, so this always re-derives them from the main process's own bundled/cached registry
+// copies, spread last so they win over anything the renderer passed. The renderer's namespaces is
+// kept only as a last-resort fallback for a prefix neither trusted source knows about yet (e.g. a
+// registry that was never successfully fetched even once) -- rare enough that just-fetched-and-not-
+// yet-cached is not worth special-casing, since packageDiscoverRegistry writes its cache immediately
+// after every successful fetch, before the renderer could have shown an Install button at all.
+ipcMain.handle('packageInstallFromRegistry', async (_event, { entry, namespaces }) => {
+    let trustedNamespaces = namespaces;
+    try {
+        const cached = JSON.parse(await readFile(registryCachePath(), 'utf8'));
+        const bundled = await loadBundledRegistry();
+        trustedNamespaces = { prefixes: { ...(namespaces?.prefixes ?? {}), ...bundled.prefixes, ...(cached.prefixes ?? {}) } };
+    } catch {
+        // Fall back to renderer supplied namespaces
+    }
+    const results = await installFromRegistryEntry(entry, {
+        namespaces: trustedNamespaces,
+        directory: join(app.getPath('userData'), 'packages'),
+        overwrite: true
+    });
+    await discoverAddons();
+    await discoverComponentLibrary();
+    return results;
+});
+
 ipcMain.handle('projectUnlock', async (_event, { path, password }) => {
     if (!pendingEncryptedPaths.has(path)) throw new Error('Select the encrypted project again.');
     const project = await decodeProjectForRenderer(await readFile(path), { password });
@@ -1862,10 +1948,7 @@ async function runCliMode() {
     const flags = parseCliFlags(rest);
 
     providerToolchainStore = createProviderToolchainStore({ directory: join(app.getPath('userData'), 'providers') });
-    extensionStateStore = createExtensionStateStore({
-        directory: join(app.getPath('userData'), 'packages'),
-        defaultDisabled: await defaultDisabledExtensionKeys()
-    });
+    extensionStateStore = createExtensionStateStore({ directory: join(app.getPath('userData'), 'packages') });
 
     let bundle;
     try {
@@ -2159,10 +2242,7 @@ app.whenReady().then(async () => {
     providerToolchainStore = createProviderToolchainStore({
         directory: join(app.getPath('userData'), 'providers')
     });
-    extensionStateStore = createExtensionStateStore({
-        directory: join(app.getPath('userData'), 'packages'),
-        defaultDisabled: await defaultDisabledExtensionKeys()
-    });
+    extensionStateStore = createExtensionStateStore({ directory: join(app.getPath('userData'), 'packages') });
 
     // A file passed on the initial launch (Windows/Linux double-click, or a path Electron
     // handed us via process.argv) opens directly into the first window rather than opening

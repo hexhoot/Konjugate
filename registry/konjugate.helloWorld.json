@@ -1,0 +1,18 @@
+{
+    "format": "konjugate-namespace-entry",
+    "formatVersion": 1,
+    "owner": "Zenin Easa Panthakkalakath",
+    "contact": "https://github.com/zenineasa",
+    "publicKeys": [
+        "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAQGYaQGouHGNG/9ZpE9WQ+cbOQDFYp861vb0eFJJxeF8=\n-----END PUBLIC KEY-----\n"
+    ],
+    "title": "Hello World",
+    "description": "A minimal Konjugate add-on -- the simplest possible example of the add-on API, meant as a starting point for anyone learning to author one.",
+    "license": "MPL-2.0",
+    "domain": "examples",
+    "url": "https://github.com/zenineasa/Konjugate-HelloWorld",
+    "packages": [
+        { "packageType": "addon", "packageId": "konjugate.helloWorld" }
+    ],
+    "downloadUrl": "https://github.com/zenineasa/Konjugate-HelloWorld/releases/latest/download/konjugate.helloWorld.kja"
+}

@@ -1,0 +1,20 @@
+{
+    "format": "konjugate-namespace-entry",
+    "formatVersion": 1,
+    "owner": "Zenin Easa Panthakkalakath",
+    "contact": "https://github.com/zenineasa",
+    "publicKeys": [
+        "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAYK8mdo2oENjGhnqOoIqmqr/ZFe9SD3rgNdUY8hCG3oA=\n-----END PUBLIC KEY-----\n"
+    ],
+    "title": "Konjugate Fintech Toolbox",
+    "description": "Quantitative finance, DeFi, and systemic-risk modeling for Konjugate: interbank contagion stress-testing and market-dynamics causal transmission.",
+    "license": "AGPL-3.0-or-later OR LicenseRef-Commercial",
+    "commercialLicenseUrl": "https://github.com/zenineasa/Konjugate-Fintech/blob/main/COMMERCIAL-LICENSE.md",
+    "domain": "finance",
+    "url": "https://github.com/zenineasa/Konjugate-Fintech",
+    "packages": [
+        { "packageType": "plugin", "packageId": "konjugate.fintech.engine" },
+        { "packageType": "addon", "packageId": "konjugate.fintech.toolbox" }
+    ],
+    "downloadUrl": "https://github.com/zenineasa/Konjugate-Fintech/releases/latest/download/konjugate-fintech-toolbox.zip"
+}

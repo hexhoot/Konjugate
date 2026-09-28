@@ -17,7 +17,7 @@ export function packageKey(packageType, packageId, version) {
     return `${packageType}:${packageId}:${version}`;
 }
 const packageIdPattern = /^[a-z][A-Za-z0-9]*(?:\.[a-z][A-Za-z0-9]*)+$/;
-// A namespace prefix (see docs/namespaces.md) is the same segment shape as a package id, but a full
+// A namespace prefix (see docs/registry.md) is the same segment shape as a package id, but a full
 // package id always has two or more segments (packageIdPattern's trailing "+") while a prefix
 // may reserve just the first one -- "example" covering "example.*" -- hence "*" here, not "+".
 const namespacePrefixPattern = /^[a-z][A-Za-z0-9]*(?:\.[a-z][A-Za-z0-9]*)*$/;
@@ -262,9 +262,9 @@ export function createPackageArchive({ packageManifest, contributionManifest, fi
     return Buffer.from(zipSync(entries, { level: 6, mtime: new Date('1980-01-01T00:00:00Z') }));
 }
 
-// ---- Publisher signing (see docs/namespaces.md) ----------------------------------------------------
+// ---- Publisher signing (see docs/registry.md) ----------------------------------------------------
 //
-// A namespace prefix reservation (namespaces.json) only means something if a package claiming
+// A namespace prefix reservation (a registry entry) only means something if a package claiming
 // that identity can be checked against it -- this is that check. It is deliberately independent
 // of installPackageArchive/inspectPackageArchive: verifyPackageArchive never throws for anything
 // short of a malformed signature.json, and nothing in this file (or main.mjs's install path)
@@ -282,7 +282,7 @@ function isPrefixOf(prefix, packageId) {
 }
 
 // The longest (most specific) reserved prefix covering packageId, if any -- if both "a" and
-// "a.b" were ever reserved (docs/namespaces.md asks reviewers to reject that, but this stays correct
+// "a.b" were ever reserved (docs/registry.md asks reviewers to reject that, but this stays correct
 // even if one slipped through), a package under "a.b.c" is checked against "a.b"'s keys, not "a"'s.
 function matchingPrefix(packageId, prefixes) {
     let best = null;
@@ -300,10 +300,10 @@ function contentDigest(files) {
     return createHash('sha256').update(lines.join('\n')).digest();
 }
 
-// privateKey: a PEM string or a crypto KeyObject for an Ed25519 private key (see docs/namespaces.md
+// privateKey: a PEM string or a crypto KeyObject for an Ed25519 private key (see docs/registry.md
 // for generating one). prefix: the namespace prefix this key is (expected to be) registered
 // under -- signing doesn't check the registry itself, only verifying does, so this can be done
-// entirely offline/in CI with no access to namespaces.json.
+// entirely offline/in CI with no access to the registry.
 export function signPackageArchive(archive, { privateKey, prefix }) {
     if (typeof prefix !== 'string' || !namespacePrefixPattern.test(prefix)) throw new PackageArchiveError('A signing prefix must be a valid namespace prefix.', 'INVALID_PREFIX');
     const files = inspectEntries(archive);
@@ -318,7 +318,7 @@ export function signPackageArchive(archive, { privateKey, prefix }) {
     return Buffer.from(zipSync({ ...files, [signatureEntryName]: strToU8(JSON.stringify(signatureEntry, null, 2)) }, { level: 6, mtime: new Date('1980-01-01T00:00:00Z') }));
 }
 
-// namespaces: the parsed contents of namespaces.json (or { prefixes: {...} }; pass {} or omit
+// namespaces: the parsed contents of loadNamespaceRegistry's return value (or { prefixes: {...} }; pass {} or omit
 // entirely to always get 'unclaimed'/'unsigned' rather than 'verified', e.g. if the caller has
 // no registry available). Returns { status, prefix?, owner?, reason? } and never throws for a
 // well-formed archive -- see the module comment above for why a failure here is a status to
@@ -365,4 +365,81 @@ export function verifyPackageArchive(archive, { namespaces } = {}) {
     return verified
         ? { status: 'verified', prefix: signatureEntry.prefix, owner: entry.owner }
         : { status: 'invalid', reason: 'The signature does not verify against any registered key for this prefix.', prefix: signatureEntry.prefix };
+}
+
+// ---- Registry (see docs/registry.md) -----------------------------------------------------------
+//
+// One file per reserved prefix, not one shared file for all of them (a shared file would be a
+// merge-conflict hotspot once more than a couple of people submit entries concurrently). The
+// prefix itself is the filename, not a field inside it -- registry/konjugate.fintech.json's
+// content describes the konjugate.fintech prefix, full stop, so there is nothing inside the file
+// that could disagree with where it lives.
+const namespaceEntryFormat = 'konjugate-namespace-entry';
+const namespaceEntryFormatVersion = 1;
+const packageTypes = ['addon', 'plugin'];
+
+// Every field beyond owner/contact/publicKeys is optional -- an entry with only those three is a
+// prefix reserved for private/internal use, not listed anywhere; loadNamespaceRegistry accepts it
+// exactly the same as a fully-filled-in entry (see docs/registry.md for why that's the intended
+// way to express "reserved but not discoverable", rather than a second, separate mechanism).
+// Exported so a network-based loader (fetching entries from GitHub instead of a local directory --
+// see src/registryClient.mjs) can apply the exact same rules loadNamespaceRegistry does, rather
+// than a second, possibly-drifting copy of them.
+export function validateNamespaceEntry(entry, prefix) {
+    const invalid = (message) => { throw new PackageArchiveError(`Registry entry "${prefix}" is invalid: ${message}`, 'INVALID_REGISTRY_ENTRY'); };
+    if (!entry || entry.format !== namespaceEntryFormat || entry.formatVersion !== namespaceEntryFormatVersion) invalid('unsupported format.');
+    if (typeof entry.owner !== 'string' || !entry.owner) invalid('owner is required.');
+    if (typeof entry.contact !== 'string' || !entry.contact) invalid('contact is required.');
+    if (!Array.isArray(entry.publicKeys) || !entry.publicKeys.length || entry.publicKeys.some((key) => typeof key !== 'string' || !key)) {
+        invalid('publicKeys must be a non-empty list of PEM-encoded keys.');
+    }
+    for (const optional of ['title', 'description', 'license', 'commercialLicenseUrl', 'domain', 'url', 'downloadUrl']) {
+        if (entry[optional] !== undefined && (typeof entry[optional] !== 'string' || !entry[optional])) invalid(`${optional}, if present, must be a non-empty string.`);
+    }
+    if (entry.packages !== undefined) {
+        if (!Array.isArray(entry.packages) || !entry.packages.length) invalid('packages, if present, must be a non-empty list.');
+        for (const [index, item] of entry.packages.entries()) {
+            if (!item || !packageTypes.includes(item.packageType)) invalid(`packages[${index}].packageType must be "addon" or "plugin".`);
+            if (typeof item.packageId !== 'string' || !packageIdPattern.test(item.packageId)) invalid(`packages[${index}].packageId is not a valid package id.`);
+            if (!isPrefixOf(prefix, item.packageId)) invalid(`packages[${index}].packageId ("${item.packageId}") is not under this entry's own prefix ("${prefix}") -- see the Multi-package bundles note in docs/addonExplorer.md for why a bundle can't name another prefix's package.`);
+        }
+    }
+}
+
+// Reads every *.json file in directoryPath (a "registry/" directory) into the { prefixes: {...} }
+// shape verifyPackageArchive expects, keyed by each file's own name (minus ".json") rather than
+// anything declared inside it. Throws PackageArchiveError on a malformed entry rather than
+// silently skipping it -- a broken registry entry should fail loudly in review/CI, not disappear.
+// Shared by loadNamespaceRegistry (below, reading a local directory) and src/registryClient.mjs's
+// network-based equivalent (fetching from GitHub instead), so "derive the prefix from the file
+// name, parse, validate" exists as one pipeline, not two copies that could drift apart. files: an
+// array of { name, text } -- name is the file's own name (e.g. "konjugate.fintech.json"), text is
+// its raw JSON content, from disk or from a network fetch, this function doesn't care which.
+export function buildNamespaceRegistry(files) {
+    const prefixes = {};
+    for (const { name, text } of files) {
+        const prefix = basename(name, '.json');
+        if (!namespacePrefixPattern.test(prefix)) throw new PackageArchiveError(`Registry file name "${name}" is not a valid namespace prefix.`, 'INVALID_PREFIX');
+        let parsed;
+        try {
+            parsed = JSON.parse(text);
+        } catch (error) {
+            throw new PackageArchiveError(`Could not read registry entry "${prefix}": ${error.message}`, 'INVALID_REGISTRY_ENTRY');
+        }
+        validateNamespaceEntry(parsed, prefix);
+        prefixes[prefix] = parsed;
+    }
+    return { prefixes };
+}
+
+export async function loadNamespaceRegistry(directoryPath) {
+    const entries = (await readdir(directoryPath, { withFileTypes: true })).filter((item) => item.isFile() && item.name.endsWith('.json'));
+    const files = await Promise.all(entries.map(async (item) => {
+        try {
+            return { name: item.name, text: await readFile(join(directoryPath, item.name), 'utf8') };
+        } catch (error) {
+            throw new PackageArchiveError(`Could not read registry entry "${basename(item.name, '.json')}": ${error.message}`, 'INVALID_REGISTRY_ENTRY');
+        }
+    }));
+    return buildNamespaceRegistry(files);
 }

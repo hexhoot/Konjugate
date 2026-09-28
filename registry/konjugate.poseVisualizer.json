@@ -1,0 +1,18 @@
+{
+    "format": "konjugate-namespace-entry",
+    "formatVersion": 1,
+    "owner": "Zenin Easa Panthakkalakath",
+    "contact": "https://github.com/zenineasa",
+    "publicKeys": [
+        "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA40B2qz2YM8Kxl6zyKmwsYV/hcBIWfnL6AR9MrGJQgAs=\n-----END PUBLIC KEY-----\n"
+    ],
+    "title": "Pose Visualizer",
+    "description": "A Three.js 6-DOF pose visualizer for Konjugate results, with timeline-synced playback.",
+    "license": "MPL-2.0",
+    "domain": "robotics",
+    "url": "https://github.com/zenineasa/Konjugate-PoseVisualizer",
+    "packages": [
+        { "packageType": "addon", "packageId": "konjugate.poseVisualizer" }
+    ],
+    "downloadUrl": "https://github.com/zenineasa/Konjugate-PoseVisualizer/releases/latest/download/konjugate.poseVisualizer.kja"
+}

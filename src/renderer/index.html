@@ -235,12 +235,23 @@
         <form method="dialog">
             <span class="contextKicker">Add-ons &amp; plugins</span>
             <strong>Extensions</strong>
-            <div class="extensionsTabs" role="tablist">
+            <!-- Installed (built long before this) and Discover (see docs/addonExplorer.md) are a
+                 mode, not a tab, since they show fundamentally different things -- what's on disk
+                 vs. what a registry says exists elsewhere. The three existing tabs remain a filter
+                 within Installed only; Discover filters by domain instead, mirroring the Examples
+                 dialog's own domain chips. -->
+            <div class="extensionsTabs extensionsModes" role="tablist">
+                <button type="button" class="extensionsTab active" data-extensions-mode="installed" role="tab">Installed</button>
+                <button type="button" class="extensionsTab" data-extensions-mode="discover" role="tab">Discover</button>
+            </div>
+            <div class="extensionsTabs" role="tablist" id="extensionsTabs">
                 <button type="button" class="extensionsTab active" data-extensions-tab="addon" role="tab">Add-ons</button>
                 <button type="button" class="extensionsTab" data-extensions-tab="plugin" role="tab">Plugins</button>
                 <button type="button" class="extensionsTab" data-extensions-tab="fmu" role="tab">FMUs</button>
             </div>
+            <div class="shapeLibraryDomains" id="extensionsDomains" role="tablist" hidden></div>
             <p id="extensionsRestartNotice" class="assistantConfigurationStatus" role="status" hidden></p>
+            <p id="extensionsDiscoverStale" class="assistantConfigurationStatus" role="status" hidden>Showing a previously-fetched list — could not reach the registry just now.</p>
             <div class="examplesExplorerBody extensionsBody">
                 <div class="examplesExplorerBrowse">
                     <div id="extensionsResults" class="examplesExplorerResults extensionsResults"></div>
@@ -258,9 +269,44 @@
                         </dl>
                         <p class="extensionsDetailLabel">Permissions</p>
                         <ul id="extensionsDetailPermissions" class="extensionsPermissionList"></ul>
+                        <!-- Cross-references a registry-declared bundle sibling (see the Multi-package
+                             bundles section of docs/addonExplorer.md) -- only populated once the registry
+                             has been fetched, so it's empty/hidden for anyone offline or without a
+                             matching bundle. -->
+                        <p id="extensionsDetailBundleNote" class="examplesExplorerDetailEmpty" hidden></p>
                         <footer class="extensionsDetailFooter">
                             <button id="extensionsToggleEnabled" type="button" class="extensionsToggleButton">Disable</button>
                             <button id="extensionsUninstall" type="button" class="extensionsDangerButton">Uninstall</button>
+                        </footer>
+                    </div>
+                    <!-- Discover's own detail content: a different set of facts (trust status,
+                         license, what a bundle installs) and a single Install action, not
+                         Enable/Disable/Uninstall -- kept as a separate block from
+                         #extensionsDetailContent above rather than overloading one markup with
+                         two unrelated shapes of information. -->
+                    <div id="extensionsDiscoverDetailContent" hidden>
+                        <!-- No pre-download "verified"/"trust" badge here -- publicKeys is a
+                             required field on every valid registry entry, so a badge that only
+                             checked "does this entry declare a key" would say the same thing about
+                             a typosquat as a legitimate publisher. Real verification needs the
+                             actual downloaded bytes (verifyPackageArchive), so it's reported per
+                             package after install instead (see the click handler below) -- a
+                             promise before that point isn't a check. -->
+                        <span id="extensionsDiscoverDetailDomain" class="extensionsBadge" hidden></span>
+                        <strong id="extensionsDiscoverDetailTitle"></strong>
+                        <p id="extensionsDiscoverDetailDescription"></p>
+                        <dl class="extensionsDetailFacts">
+                            <div><dt>License</dt><dd id="extensionsDiscoverDetailLicense"></dd></div>
+                            <div id="extensionsDiscoverDetailCommercialLicenseRow" hidden><dt>Commercial</dt><dd id="extensionsDiscoverDetailCommercialLicense"></dd></div>
+                            <div><dt>Publisher</dt><dd id="extensionsDiscoverDetailOwner"></dd></div>
+                            <div id="extensionsDiscoverDetailContactRow" hidden><dt>Contact</dt><dd id="extensionsDiscoverDetailContact"></dd></div>
+                            <div id="extensionsDiscoverDetailUrlRow" hidden><dt>Project</dt><dd id="extensionsDiscoverDetailUrl"></dd></div>
+                        </dl>
+                        <p class="extensionsDetailLabel">Installs</p>
+                        <ul id="extensionsDiscoverDetailPackages" class="extensionsPermissionList"></ul>
+                        <p id="extensionsDiscoverDetailStatus" class="examplesExplorerDetailEmpty" hidden></p>
+                        <footer class="extensionsDetailFooter">
+                            <button id="extensionsDiscoverInstall" type="button" class="doneButton">Install</button>
                         </footer>
                     </div>
                 </div>

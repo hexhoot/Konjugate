@@ -1,0 +1,17 @@
+{
+    "format": "konjugate-namespace-entry",
+    "formatVersion": 1,
+    "owner": "Zenin Easa Panthakkalakath",
+    "contact": "https://github.com/zenineasa",
+    "publicKeys": [
+        "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAKC9bNvBodi6rlP2JVcmhsZ93FKpA/Sb6fhLaesdC7Ks=\n-----END PUBLIC KEY-----\n"
+    ],
+    "title": "Results Analysis",
+    "description": "Plotly-backed time-series, scatter and distribution plots for exploring and comparing Konjugate simulation results, with CSV export.",
+    "license": "MPL-2.0",
+    "url": "https://github.com/zenineasa/Konjugate-ResultPlotViewer",
+    "packages": [
+        { "packageType": "addon", "packageId": "konjugate.resultPlotViewer" }
+    ],
+    "downloadUrl": "https://github.com/zenineasa/Konjugate-ResultPlotViewer/releases/latest/download/konjugate.resultPlotViewer.kja"
+}
