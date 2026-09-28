@@ -1,0 +1,109 @@
+<!-- Copyright © 2026 Zenin Easa Panthakkalakath -->
+
+# Addon Explorer, Registry, and Recommendations
+
+## Status and purpose
+
+This document records the product and technical direction discussed for discovering, installing, and recommending Konjugate add-ons and plugins. It is a design proposal, not a promise that every idea will be implemented unchanged. Its purpose is to preserve the coherent shape of the idea, distinguish what's already decided from what's still open, and give an incremental path that doesn't require building everything at once before any of it is useful.
+
+Nothing here starts from nothing. `src/packageArchive.mjs` already has `signPackageArchive`/`verifyPackageArchive` and a namespace-reservation registry (`namespaces.json`, restructured into `registry/<prefix>.json` — see below), both built specifically as trust primitives with nowhere yet to be *shown*. `installPackageArchive`/`uninstallPackage`/`listInstalledPackages` already exist. The renderer already has a fully-built Extensions dialog (`#extensionsDialog`) with Add-ons/Plugins/FMUs tabs, an installed-items list, a detail pane, and Enable/Disable/Uninstall — it only has an "Installed" side, no "Discover" side. The Examples dialog already has the domain-filter-chip and browse-list-plus-detail-pane pattern this reuses. The central idea here is connecting those pieces, not inventing a new subsystem.
+
+## Design principles
+
+- The plugin/add-on ecosystem stays permissionless. Nothing here gates installing or running anything — matches the existing decision that `verifyPackageArchive` is advisory only, never a precondition of `installPackageArchive`.
+- No new backend infrastructure *for now*. Discovery data is git-reviewed and static, fetched directly from the public repo, the same trust model `namespaces.json` already uses — not a hosted service this project would need to run, pay for, or keep available. A real marketplace (live search, ratings, install counts, a moderation team who can pull something after the fact) is a legitimate future evolution, not a rejected idea — it's deferred because standing up and maintaining a custom server has its own real, ongoing costs (hosting, pages, uptime, moderation staffing) that aren't worth taking on before there's an ecosystem large enough to need what only a live backend can give it. Everything in this document assumes the static, git-based version specifically; see Future: a hosted marketplace, below, for the boundary between the two.
+- The Explorer is strictly additive. Manual "install from a local file" must keep working unchanged, for offline use, air-gapped environments, and private add-ons that will never be listed.
+- A recommendation is never a requirement. Declining one must leave a project or the app exactly as usable as accepting it would have.
+- Reuse existing UI idioms (the Extensions dialog's layout, the Examples dialog's domain chips) instead of inventing new ones for the same job.
+- Don't hardcode the one official registry as the only possible one. An Explorer that can only ever point at a centrally curated list would contradict the permissionless posture above. This lives as a buried preference, not a first-class Explorer control — its only real use case is an organization running a private internal registry, an admin-level concern that most users will never touch, not something worth surfacing prominently for everyone.
+- Don't specify a field before a real entry needs it. A registry with a handful of entries doesn't need to anticipate every field a large one eventually might — add capability when something real requires it, not speculatively.
+
+## Registry restructuring
+
+An earlier version of this document split identity (`namespaces.json`: who owns a prefix, what key they sign with) from discovery (a separate catalog: what an add-on does, where to get it) into two parallel files, on the theory that a single prefix might someday cover several differently-licensed things. Nothing today actually needs that — `konjugate.fintech` is one prefix, one project, one license — and the result was two files that mostly duplicate each other's title and description, with a paragraph justifying why that's fine. It wasn't fine so much as unnecessary: **one unified file per reserved prefix**, in a new `registry/` directory, replaces both.
+
+`registry/<prefix>.json` (e.g. `registry/konjugate.fintech.json`) — one file per reservation, not one shared file for all of them, for the same reason a shared file was always going to be a merge-conflict hotspot once more than a couple of people submit entries concurrently (the same problem Homebrew Cask, vcpkg's ports, and crates.io's index all solve the same way). Fields:
+
+- `owner`, `contact`, `publicKeys` — identity/trust, as today. Always required; this is the part every reservation needs regardless of anything else.
+- `title`, `description` — human-readable, one place, no longer duplicated across two files.
+- `license` — an SPDX identifier or expression, not a plain open-source boolean, because a boolean can't represent what's already true of the one real entry this would describe: the fintech toolbox is dual-licensed (AGPLv3 and a separate commercial option). SPDX's `OR` syntax covers exactly this (`AGPL-3.0-or-later OR LicenseRef-Commercial`); an optional `commercialLicenseUrl` can point at something like `COMMERCIAL-LICENSE.md`.
+- `domain` — reuses the Examples dialog's existing domain vocabulary.
+- `url` — one link to the project (its repository, in the common case). Not worth splitting into separate repository/homepage/docs fields until a real entry actually needs more than one link.
+- `packages` — one or more, not a single download URL; see Multi-package bundles, below, for why this needs to be a list.
+
+`title`, `description`, `license`, `domain`, `url`, and `packages` are all optional. A reservation with only the identity fields filled in is a prefix reserved for private/internal use, not listed anywhere — the Explorer simply skips entries that don't have enough to display. This replaces the old two-file model's "reserve without being catalogued" case without needing a second file to express it.
+
+Deliberately left out, sourced elsewhere instead: license compatibility fields for native-code platform support or the web edition, icons, tags/keywords for search, and anything else that isn't needed yet — nothing today ships native code or targets the web edition, and a registry with a small handful of real entries doesn't need a search or tagging system. These are easy, additive, non-breaking changes to make once an actual entry needs one of them; guessing at their shape now, before that entry exists, is as likely to be wrong as right. Also left out: last-updated date and download/popularity counts, both already available from GitHub's own API against whatever release the `packages` URLs point at, so hand-maintaining a copy in this file would just be a second, staler source of the same data. And a permissions preview, which should come from the real downloaded package at verification time — the same principle `verifyPackageArchive` already follows, checking actual bytes rather than a claim about them — not from a value trusted in this file that could drift from what the package actually declares.
+
+Reviewing reservation PRs is fine at today's single-maintainer scale and won't be revisited before it's an actual, felt bottleneck — the same reasoning as deferring a hosted marketplace, just at a much smaller scale. Not a gap to close now.
+
+## The Addon Explorer
+
+Extends `#extensionsDialog` with a second mode alongside today's "Installed" list — "Discover" — rather than building a separate window or dialog.
+
+- **Data source**: the `registry/` directory above, fetched at runtime from `raw.githubusercontent.com` (or a configurable alternate registry URL — see Design principles), cached locally with a last-fetched timestamp so the Explorer works offline against a stale-but-present list rather than failing outright.
+- **Filtering**: reuse the Examples dialog's domain-chip pattern (`ALL | ROBOTICS | MECHANICAL | ... | FINANCE`) verbatim rather than designing new filter UI.
+- **One-click install**: select an entry → download each of its listed packages (see Multi-package bundles, below) → run each through `verifyPackageArchive` → call the existing `installPackageArchive` for each → report the combined result (including verification status per package, not just success/failure of the install itself).
+- **Trust surfacing** — the actual security payoff of connecting this to the signing work already done: show verified/unsigned/unclaimed/invalid prominently per entry, not as a buried detail. A reserved-and-signed entry gets a visible "Verified publisher" treatment; anything else is presented plainly, not hidden, but visibly not making the same claim. This is the concrete mitigation for the obvious risk an open registry creates — a typosquatted entry pointing at something malicious can't fake a signature it doesn't hold the key for.
+- **Update checking**: diff each installed package's version (already available via `listInstalledPackages`) against the registry's latest, surfaced as a badge/count on the Explorer entry point.
+- **Popularity signal without new telemetry**: GitHub already tracks per-release-asset download counts through its own API. Since this design assumes distribution through GitHub Releases (the same pipeline the fintech toolbox's `release.yml` now uses), the Explorer can read that directly rather than Konjugate needing to invent its own usage tracking.
+
+## Multi-package bundles
+
+The fintech toolbox surfaced a real gap here directly: it ships one plugin (`konjugate.fintech.engine`, a `.kjp`) and one add-on (`konjugate.fintech.toolbox`, a `.kja`) that must be installed together to be useful, and today nothing declares that anywhere — not in either manifest (there's no `dependencies` field in the package format at all), not even implicitly in code (the add-on never references the plugin's component IDs; the coupling only exists at the level of "you build a model with node types the plugin defines, then use the add-on on it"). It's tribal knowledge, carried only by documentation telling someone to install both.
+
+Two different relationships are worth naming, and this is specifically the first one:
+
+- **Bundle** — packages always distributed, versioned, and installed together as one unit. This is what the fintech pair actually is: one `package.json` version number drives both, one build script builds both, and one release zip already contains both. The pairing is structural, not incidental.
+- **Dependency** — a looser relationship where one package requires another, but the two are independently versioned and possibly independently published. Nothing in this project needs this yet (nothing depends on the fintech plugin except the fintech add-on), but a real multi-publisher ecosystem eventually will. Worth keeping distinct from bundling rather than solving both with one mechanism, since conflating them would force every bundle's members into lockstep versioning even when a looser dependency is all that's actually needed.
+
+Bundling is the one this project needs now, and it fits the registry model directly: a registry entry's `packages` field is a list, not a single package, so "Fintech Toolbox" is one entry naming both the plugin and the add-on, pointing at the same release (in the common case, the same zip, as separate assets or extracted from it). One click installs every package the entry lists, and the user is never asked to know that clicking "install the toolbox" also means "and also install its engine."
+
+A few things fall out of this for free or need a small deliberate choice:
+
+- **Version lockstep is free.** A bundle has one version by construction, so update-checking doesn't need to separately track drift between a plugin and its add-on — one comparison covers the whole bundle.
+- **The Installed side of the Explorer doesn't change.** Bundle members still show as separate items under their respective Add-ons/Plugins tabs in `#extensionsDialog`, since they genuinely are separate installed packages on disk. Each one's detail pane can cross-reference the other ("part of the Fintech Toolbox bundle") without needing a UI rework.
+- **Partial uninstall — and partial disable — get a nudge, not a block.** Uninstalling one half of an installed bundle should warn that it leaves the other half without its counterpart, not refuse outright — consistent with everything else here being advisory; someone debugging one half specifically might have a real reason to remove just it. `#extensionsDialog`'s separate Disable toggle deserves the identical warning, not a lighter touch just because it's reversible: a project that needs both halves fails to resolve exactly the same way whether the other half is disabled or gone. Reversibility changes how easy recovery is afterward, not how immediate the risk is right now.
+- **A bundle's `packages` all share its own prefix's key — a cross-publisher pairing is a dependency, not a bundle.** Letting one registry entry list another publisher's already-signed package in its own `packages` list would let it borrow that package's verified status by association, while anything else in the same list rides along under the same "one verified bundle" presentation without equivalent scrutiny — a real supply-chain risk, not a hypothetical one. A third-party add-on that wants to pair with someone else's published plugin points at that plugin's own separate registry entry instead; that relationship is exactly what "Dependency," above, is for, deliberately kept distinct from bundling for this reason among others.
+
+## Splitting the bundled example add-ons into their own repositories
+
+`addons/helloWorld`, `addons/poseVisualizer`, and `addons/resultPlotViewer` are real, buildable starter templates meant for people learning to author an add-on — these move out, one repository each, following a `Konjugate-<Name>` naming convention (`Konjugate-HelloWorld`, and so on). `tests/fixtures/launcher/*.mjs` and similar are pure synthetic test data consumed only by `packageArchive.test.mjs`/`launcherHost.test.mjs` — these are not user-facing add-ons in any sense and stay exactly where they are.
+
+Moving the real templates out is also the best available dogfooding of everything above: `Konjugate-HelloWorld` becomes registry entry #1, with its own reservation, its own signing key, and its own `build.yml`/`release.yml` (mirroring the fintech toolbox's), proving the entire discovery-through-install pipeline end to end using Konjugate's own first example before any third-party author has to trust it with theirs.
+
+Worth preserving `addons/helloWorld`'s git history via a subtree/filter-repo split rather than starting fresh — it's the flagship template future add-on authors will actually study and fork, and its commit history showing how it evolved has real value for that audience, more than a typical internal refactor would justify. The same approach is barely more effort for the other two once it's worked out once, so there's little reason to treat them differently. `docs/packageDevelopment.md`'s "copy `addons/helloWorld`" instruction updates to point at cloning the new repository instead, whenever this actually happens.
+
+## Recommended add-ons
+
+Two distinct features, not one:
+
+- **Project-level.** A `.kjt` project that references a plugin/add-on not currently installed already fails today — `pluginResolver.mjs` throws `PLUGIN_DIRECTORY_MISSING`/`PLUGIN_REFERENCE_INVALID`, surfaced as a bare error. The improved version of that exact moment: "This project needs `konjugate.fintech.engine` (not installed) → Install," resolved through the same one-click flow as the Explorer. This is the highest-value piece of the whole idea, since it fixes an experience that's already bad today rather than adding a new one.
+- **App-level.** A curated, one-time "starter pack" suggestion shown to new users through the existing Welcome window (`openWelcomeWindow`) — closer to a first-run popular-extensions prompt than to a per-project recommendation. Lower-stakes, and must be dismissible and never repeated once declined or accepted.
+
+Both stay strictly advisory, per the design principles above — declining either must never block opening or using a project.
+
+The project-level case is deliberately limited to an actual unmet reference — a real, automatically-detected need — rather than also supporting a *soft* declared companion recommendation ("works well with X" even when X isn't required). A soft-recommendation mechanism would need its own authoring surface (something to declare it in) for a need nobody's identified yet; the same "don't specify before something real needs it" reasoning from Design principles applies here too.
+
+## Incremental delivery
+
+This isn't really a five-stage march, even though an earlier version of this document phased it that way — a habit copied from documents describing genuinely large, sequenced features, not examined against what's actually here. There's one real deliverable, and everything else is a small, independent addition to it.
+
+**The core deliverable**: the `registry/<prefix>.json` format and the Explorer's "Discover" side of `#extensionsDialog`, built together. A registry format with nothing reading it isn't a usable increment — it's an unused file — so splitting "define the format" and "build the UI that reads it" into separate phases was artificial; they're two halves of one thing. Bundle support (installing every package a registry entry lists, not just one) is part of this from the start, not a later addition, since it's not optional for fintech's own case — a version of this that only installs single packages doesn't actually solve the problem that motivated the whole document.
+
+**Independent follow-ons, in no particular order** — each useful on its own, none blocking or blocked by the others, none requiring the rest to exist first beyond the core deliverable above:
+
+- Splitting `addons/helloWorld` (and the other two) into their own repositories. Not required for anything else to work — fintech alone, with its own repository, signing, and release pipeline already, is sufficient to prove the whole thing end to end. This is a nice-to-have canonical example for future add-on authors, not a dependency.
+- Turning an unmet plugin/add-on reference into an install offer instead of a bare error (needs the core deliverable's install flow to exist, nothing else).
+- A one-time Welcome-window starter-pack suggestion for new users.
+- Surfacing available updates for already-installed packages.
+
+The last two in particular were only ever bundled together as "Phase 5" because they both happened last in the list, not because they have anything to do with each other.
+
+## Future: a hosted marketplace
+
+Everything above — the registry, the Explorer, bundling, recommendations — is designed around a static, git-reviewed file set with no backend. That's the right starting point, not a permanent ceiling, and it's worth being explicit about where the boundary sits so this document doesn't get mistaken later for having ruled out something it simply hasn't gotten to.
+
+A hosted marketplace would add what a static file fundamentally can't: live search over a large registry instead of client-side filtering over a small cached one, ratings and reviews, and a moderation team able to pull a bad entry immediately rather than only through the next PR that un-lists it. None of that is buildable well on top of `registry/<prefix>.json` files no matter how the schema evolves — it needs an actual running service, with the hosting, uptime, and moderation-staffing commitment that comes with one.
+
+This isn't scoped here, and shouldn't be started opportunistically alongside the deliverable and follow-ons above. It's worth revisiting once the registry's real size and usage make the static model's limits (no search, no live trust signals beyond cryptographic verification, no way to react to a bad entry faster than a PR cycle) an actual, felt problem — not before, on the same reasoning already given for deferring reservation-review scaling, above.
