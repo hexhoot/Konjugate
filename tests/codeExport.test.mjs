@@ -294,3 +294,35 @@ test('a cases expression exports as a conditional in both languages', async () =
     assert.equal(emitExpression(compileExpressionNode(expression), symbols, cppOperators),
         '(((0 < x) && (x < 1)) ? a : ((!((x == 2))) ? 2 : 3))');
 });
+
+test('a setsValue source term is assigned before the derivatives, not integrated', async () => {
+    const { generateFmiModel } = await import('../src/fmiCodeGen.mjs');
+    const document = baseDocument();
+    const nodeId = id();
+    const [driver, doubled] = [id(), id()];
+    const binding = (stateId, symbol) => ({ kind: 'state', nodeId, stateId, symbol });
+    document.nodes.push({
+        id: nodeId, name: 'Node',
+        states: [
+            { id: driver, name: 'Driver', symbol: 'driver', initialValue: 1, unit: '' },
+            { id: doubled, name: 'Doubled', symbol: 'doubled', initialValue: 0, unit: '' }
+        ],
+        sourceTerms: [
+            { id: id(), state: 'doubled', expression: '2 x', setsValue: true,
+                expressionModel: { latex: '2 x', bindings: [binding(driver, 'x')], output: { stateId: doubled }, mathJson: ['Multiply', '2', 'x'] } },
+            { id: id(), state: 'driver', expression: '0.5', expressionModel: { latex: '0.5', bindings: [], output: { stateId: driver }, mathJson: '0.5' } }
+        ]
+    });
+    const sources = {
+        cpp: generateStandaloneProgram(document, 'cpp'),
+        python: generateStandaloneProgram(document, 'python'),
+        fmu: generateFmiModel(document).source
+    };
+    for (const [kind, source] of Object.entries(sources)) {
+        const assignment = kind === 'python' ? source.indexOf('state[1] = algebraic_value') : source.indexOf('state[1] = algebraicValue;');
+        const derivatives = source.indexOf(kind === 'python' ? 'derivative = [0.0]' : 'double derivative[');
+        assert.ok(assignment > 0, `${kind}: the algebraic state must be assigned.`);
+        assert.ok(assignment < derivatives, `${kind}: the algebraic state must be assigned before derivatives are evaluated.`);
+        assert.doesNotMatch(source, /derivative\[1\] \+=/, `${kind}: the algebraic state must not be integrated.`);
+    }
+});

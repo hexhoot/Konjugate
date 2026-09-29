@@ -48,8 +48,10 @@ function commandExists(executable) {
 // self-referential Power term, a bidirectional edge (tested against the same node pair's "other
 // side" local/snapshot reclassification), a multi-substep node, and a live parameter resolved to
 // its baked default (no runtime override is sent to any of the three engines being compared).
-const nodeIds = { source: 1, squarer: 2, adder: 3, power: 4, coupled: 5 };
-const stateIds = { source: 11, squarer: 12, adder: 13, power: 14, coupled: 15 };
+// The sixth node covers algebraic (setsValue) states: two of them, declared out of dependency
+// order, recomputed every substep and read by an ordinary differential term, plus a cases term.
+const nodeIds = { source: 1, squarer: 2, adder: 3, power: 4, coupled: 5, algebraic: 6 };
+const stateIds = { source: 11, squarer: 12, adder: 13, power: 14, coupled: 15, driver: 16, doubled: 17, shifted: 18, follower: 19 };
 const paramIds = { k: 21, growth: 22, coupling: 23 };
 
 const document = {
@@ -106,6 +108,53 @@ const document = {
             states: [{ id: stateIds.coupled, name: 'Value', symbol: 'value', initialValue: 2, unit: '' }],
             numerics: { substepsPerGlobalStep: 1 },
             sourceTerms: []
+        },
+        {
+            id: nodeIds.algebraic, name: 'Algebraic',
+            states: [
+                { id: stateIds.driver, name: 'Driver', symbol: 'driver', initialValue: 1, unit: '' },
+                { id: stateIds.doubled, name: 'Doubled', symbol: 'doubled', initialValue: 0, unit: '' },
+                { id: stateIds.shifted, name: 'Shifted', symbol: 'shifted', initialValue: 0, unit: '' },
+                { id: stateIds.follower, name: 'Follower', symbol: 'follower', initialValue: 0, unit: '' }
+            ],
+            numerics: { substepsPerGlobalStep: 2 },
+            sourceTerms: [
+                {
+                    // driver' = 0.5 while driver < 1.4, otherwise 0.1
+                    id: 104, state: 'driver', expression: 'cases',
+                    expressionModel: {
+                        latex: '', bindings: [{ kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.driver, symbol: 'x' }],
+                        output: { stateId: stateIds.driver }, mathJson: ['Which', ['Less', 'x', '1.4'], '0.5', 'True', '0.1']
+                    }
+                },
+                {
+                    // shifted = doubled + 1 -- depends on doubled, which is declared after it
+                    id: 105, state: 'shifted', expression: 'doubled + 1', setsValue: true,
+                    expressionModel: {
+                        latex: '', bindings: [{ kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.doubled, symbol: 'y' }],
+                        output: { stateId: stateIds.shifted }, mathJson: ['Add', 'y', '1']
+                    }
+                },
+                {
+                    // doubled = 2 driver
+                    id: 106, state: 'doubled', expression: '2 driver', setsValue: true,
+                    expressionModel: {
+                        latex: '', bindings: [{ kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.driver, symbol: 'x' }],
+                        output: { stateId: stateIds.doubled }, mathJson: ['Multiply', '2', 'x']
+                    }
+                },
+                {
+                    // follower' = 0.8 (shifted - follower), reading an algebraic state
+                    id: 107, state: 'follower', expression: '0.8 (shifted - follower)',
+                    expressionModel: {
+                        latex: '', bindings: [
+                            { kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.shifted, symbol: 's' },
+                            { kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.follower, symbol: 'f' }
+                        ],
+                        output: { stateId: stateIds.follower }, mathJson: ['Multiply', '0.8', ['Add', 's', ['Negate', 'f']]]
+                    }
+                }
+            ]
         }
     ],
     edges: [
@@ -135,6 +184,125 @@ const document = {
         }
     ]
 };
+
+// Provider-based algebraic states. Providers can't be exported across languages, so these are
+// separate one-language documents: a C++ relationship provider with setsValue (C++ export), and a
+// Python relationship provider with setsValue plus a Python node provider with one derivative
+// output and one setsValue output (Python export). Each provider reads simulationTime, which pins
+// down the engine's timing rule (an algebraic provider is evaluated at the end of its substep).
+const cppAlgebraicProvider = `#include <konjugate/relationshipProvider.hpp>
+#include <memory>
+
+class ScaledDriver final : public konjugate::sdk::v1::RelationshipProvider {
+public:
+    konjugate::sdk::v1::RelationshipDescription describe() const override {
+        return {"fidelity.scaledDriver", "Scaled driver", {{"driver", "Driver", ""}}, {"value", "Value", ""}};
+    }
+    void evaluate(const konjugate::sdk::v1::EvaluationContext& context, konjugate::sdk::v1::OutputCollector& output) override {
+        output.addGradient(2.0 * context.inputs.at("driver") + context.simulationTime);
+    }
+};
+
+std::unique_ptr<konjugate::sdk::v1::RelationshipProvider> createRelationshipProvider() {
+    return std::make_unique<ScaledDriver>();
+}
+`;
+const pythonAlgebraicProvider = `from konjugate import RelationshipDescription, RelationshipProvider, ScalarPort
+
+
+class ScaledDriver(RelationshipProvider):
+    def describe(self):
+        return RelationshipDescription("fidelity.scaledDriver", "Scaled driver", [ScalarPort("driver", "Driver", "")], ScalarPort("value", "Value", ""))
+
+    def evaluate(self, context, inputs, outputs):
+        outputs.add_gradient(2.0 * inputs["driver"] + context.simulation_time)
+`;
+const pythonNodeProvider = `from konjugate import NodeProvider, NodeProviderDescription, ScalarPort
+
+
+class LevelWithReading(NodeProvider):
+    def describe(self):
+        return NodeProviderDescription("fidelity.levelWithReading", "Level with reading", [ScalarPort("level", "Level", "")],
+                                       [ScalarPort("levelRate", "Level rate", ""), ScalarPort("reading", "Reading", "")])
+
+    def evaluate(self, context, inputs, outputs):
+        outputs.add_gradient("levelRate", 0.3 - 0.1 * inputs["level"])
+        outputs.add_gradient("reading", 3.0 * inputs["level"] + context.simulation_time)
+
+    def checkpoint(self):
+        return b""
+
+    def restore(self, payload):
+        pass
+`;
+
+function providerAlgebraicDocument(kind) {
+    const node = {
+        id: 1, name: 'Provider algebraic',
+        states: [
+            { id: 11, name: 'Driver', symbol: 'driver', initialValue: 1, unit: '' },
+            { id: 12, name: 'Scaled', symbol: 'scaled', initialValue: 0, unit: '' },
+            { id: 13, name: 'Follower', symbol: 'follower', initialValue: 0, unit: '' }
+        ],
+        numerics: { substepsPerGlobalStep: 2 },
+        sourceTerms: [
+            {
+                id: 101, state: 'driver', expression: '0.5',
+                expressionModel: { latex: '0.5', bindings: [], output: { stateId: 11 }, mathJson: '0.5' }
+            },
+            {
+                id: 102, state: 'scaled', expression: '', setsValue: true,
+                implementation: {
+                    kind, providerApiVersion: 1, source: kind === 'cpp' ? cppAlgebraicProvider : pythonAlgebraicProvider,
+                    bindings: [{ key: 'driver', kind: 'state', stateId: 11 }], output: { key: 'value', stateId: 12 }
+                }
+            },
+            {
+                id: 103, state: 'follower', expression: '0.8 (scaled - follower)',
+                expressionModel: {
+                    latex: '', bindings: [
+                        { kind: 'state', nodeId: 1, stateId: 12, symbol: 's' },
+                        { kind: 'state', nodeId: 1, stateId: 13, symbol: 'f' }
+                    ],
+                    output: { stateId: 13 }, mathJson: ['Multiply', '0.8', ['Add', 's', ['Negate', 'f']]]
+                }
+            }
+        ]
+    };
+    const nodes = [node];
+    if (kind === 'python') {
+        nodes.push({
+            id: 2, name: 'Node provider',
+            states: [
+                { id: 21, name: 'Level', symbol: 'level', initialValue: 1, unit: '' },
+                { id: 22, name: 'Reading', symbol: 'reading', initialValue: 0, unit: '' },
+                { id: 23, name: 'Tracker', symbol: 'tracker', initialValue: 0, unit: '' }
+            ],
+            numerics: { substepsPerGlobalStep: 3 },
+            implementation: {
+                kind: 'python', providerApiVersion: 1, source: pythonNodeProvider,
+                bindings: [{ key: 'level', kind: 'state', stateId: 21 }],
+                outputs: [{ key: 'levelRate', stateId: 21 }, { key: 'reading', stateId: 22, setsValue: true }]
+            },
+            sourceTerms: [{
+                // Reads the node provider's algebraic output, which the engine writes only after
+                // every contribution in the substep has been evaluated.
+                id: 201, state: 'tracker', expression: 'reading - tracker',
+                expressionModel: {
+                    latex: '', bindings: [
+                        { kind: 'state', nodeId: 2, stateId: 22, symbol: 'r' },
+                        { kind: 'state', nodeId: 2, stateId: 23, symbol: 't' }
+                    ],
+                    output: { stateId: 23 }, mathJson: ['Add', 'r', ['Negate', 't']]
+                }
+            }]
+        });
+    }
+    return {
+        format: 'konjugate', version: 1, metadata: { projectName: `Provider algebraic fixture (${kind})` },
+        nodes, edges: []
+    };
+}
 
 const globalTimeStep = 0.1;
 const outputInterval = 0.2;
@@ -175,14 +343,14 @@ try {
     for (let time = 0; time <= targetTime + 1e-9; time += outputInterval) expectedTimes.push(Number(time.toFixed(10)));
 
     let comparisons = 0;
-    const compareRowsAgainstEngine = (rows, label) => {
+    const compareRowsAgainstEngine = (rows, label, reference = engineResult, stateOrder = orderedStateIds) => {
         for (const time of expectedTimes) {
-            const engineSample = engineResult.samples.find((sample) => Math.abs(sample.time - time) < 1e-6);
+            const engineSample = reference.samples.find((sample) => Math.abs(sample.time - time) < 1e-6);
             assert.ok(engineSample, `The real engine did not emit a sample at ${time} s.`);
             const engineValues = new Map(engineSample.states.map((state) => [state.stateId, state.value]));
             const row = rows.find((candidate) => Math.abs(candidate[0] - time) < 1e-6);
             assert.ok(row, `${label} did not emit a row at ${time} s.`);
-            orderedStateIds.forEach((stateId, index) => {
+            stateOrder.forEach((stateId, index) => {
                 const engineValue = engineValues.get(stateId);
                 const value = row[index + 1];
                 assert.ok(Number.isFinite(engineValue) && Number.isFinite(value),
@@ -252,6 +420,50 @@ try {
         compareRowsAgainstEngine(parseCsv(await readFile(pythonMpiCsvPath, 'utf8')), 'Python (mpi)');
     } else {
         console.log('  (skipping python mpi variant: mpirun/mpi4py not available)');
+    }
+
+    // --- 3. provider-based algebraic states, one language per document ---
+    const runEngine = async (doc, label) => {
+        const path = join(directory, `${label}.kjt`);
+        const resultPath = join(directory, `${label}.bin`);
+        const reportPath = join(directory, `${label}Validation.bin`);
+        await writeFile(path, await encodeProjectFile(JSON.stringify(doc)));
+        if ((await execute(executable, ['validate', path, '--report', reportPath])).code !== 0) {
+            throw new Error(`The ${label} model must validate: ${JSON.stringify(decodeValidationReport(await readFile(reportPath)))}`);
+        }
+        // Providers need the SDKs from this checkout.
+        const providerConfigurationPath = join(directory, `${label}Configuration.json`);
+        await writeFile(providerConfigurationPath, JSON.stringify({
+            name: label, targetTime, globalTimeStep, outputInterval,
+            providers: {
+                cpp: { sdkPath: join(import.meta.dirname, '..', '..', 'engine') },
+                python: { sdkPath: join(import.meta.dirname, '..', '..', 'engine', 'sdk', 'python') }
+            }
+        }));
+        assert.equal((await execute(executable, ['run', path, '--configuration', providerConfigurationPath, '--output', resultPath])).code, 0, `The engine must run the ${label} model.`);
+        return decodeResultFile(await readFile(resultPath));
+    };
+    for (const kind of ['cpp', 'python']) {
+        const providerDocument = providerAlgebraicDocument(kind);
+        const reference = await runEngine(providerDocument, `${kind}ProviderAlgebraic`);
+        providerDocument.exportDefaultTargetTime = targetTime;
+        providerDocument.runConfigurations = [{ id: 900, globalTimeStep, outputInterval }];
+        providerDocument.activeRunConfigurationId = 900;
+        const stateOrder = providerDocument.nodes.flatMap((node) => node.states.map((state) => state.id));
+        const label = `${kind === 'cpp' ? 'C++' : 'Python'} (provider algebraic)`;
+        const csvPath = join(directory, `${kind}ProviderAlgebraic.csv`);
+        if (kind === 'cpp') {
+            const sourcePath = join(directory, 'providerAlgebraic.cpp');
+            const binaryPath = join(directory, `providerAlgebraic${process.platform === 'win32' ? '.exe' : ''}`);
+            await writeFile(sourcePath, generateStandaloneProgram(providerDocument, 'cpp'));
+            assert.equal((await execute(cxx, ['-std=c++20', '-O2', sourcePath, '-o', binaryPath])).code, 0, `The ${label} program must compile.`);
+            assert.equal((await execute(binaryPath, ['--target-time', String(targetTime), '--output', csvPath])).code, 0, `The ${label} program must run.`);
+        } else {
+            const sourcePath = join(directory, 'providerAlgebraic.py');
+            await writeFile(sourcePath, generateStandaloneProgram(providerDocument, 'python'));
+            assert.equal((await execute(python, [sourcePath, '--target-time', String(targetTime), '--output', csvPath])).code, 0, `The ${label} program must run.`);
+        }
+        compareRowsAgainstEngine(parseCsv(await readFile(csvPath, 'utf8')), label, reference, stateOrder);
     }
 
     assert.ok(comparisons >= 5 * expectedTimes.length * 3, 'Expected at least 5 states compared at every sampled time across several variants.');

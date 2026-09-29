@@ -16,7 +16,7 @@
 
 import {
     buildModel, collectProviders, cppSdkNamespace, doubleLiteral,
-    emitCppProviderContribution, emitCppRegularContribution, stripLeadingCppInclude
+    cppAlgebraicLines, emitCppProviderContribution, emitCppRegularContribution, stripLeadingCppInclude
 } from './codeExport.mjs';
 
 // Assigns a stable FMI valueReference to every state (as an "output") and every parameter --
@@ -58,7 +58,7 @@ function assignValueReferences(model) {
             nextValueReference += 1;
         }
     };
-    for (const plan of model.nodePlans) for (const contribution of plan.contributions) visitSymbols(contribution.symbols);
+    for (const plan of model.nodePlans) for (const contribution of [...plan.algebraic, ...plan.contributions]) visitSymbols(contribution.symbols);
 
     return { stateVariables, parameterVariables, parameterValueReferences };
 }
@@ -69,7 +69,7 @@ function assignValueReferences(model) {
 // diverges from the plain export's.
 function rewriteParameterSymbols(model, parameterValueReferences) {
     for (const plan of model.nodePlans) {
-        for (const contribution of plan.contributions) {
+        for (const contribution of [...plan.algebraic, ...plan.contributions]) {
             for (const value of contribution.symbols.values()) {
                 const parameter = value.parameter;
                 if (!parameter) continue;
@@ -98,6 +98,7 @@ function cppNodeStepBlocks(model, providerInfo) {
             `        const double nodeTimeStep = globalTimeStep / ${plan.substeps}.0;`,
             `        for (int substep = 0; substep < ${plan.substeps}; ++substep) {`,
             '            const double stepTime = currentTime + substep * nodeTimeStep;',
+            cppAlgebraicLines(plan, providerInfo),
             `            double derivative[${stateCount}] = {};`,
             contributionLines,
             `            for (int index = 0; index < ${stateCount}; ++index) state[index] += nodeTimeStep * derivative[index];`,

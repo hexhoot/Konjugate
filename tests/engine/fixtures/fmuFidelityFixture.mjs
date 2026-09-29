@@ -5,7 +5,8 @@
 // kept in one place so the two checks can't silently drift apart. A 4-node model with a live
 // parameter, a tunable constant parameter, a cross-node edge, a bidirectional edge, and a
 // multi-substep node -- enough to exercise the same graph shapes codeExportFidelity.mjs already
-// covers for the plain export, plus fmi2SetReal.
+// covers for the plain export, plus fmi2SetReal. A fifth node adds algebraic (setsValue) states,
+// declared out of dependency order and read by an ordinary differential term.
 
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -29,8 +30,8 @@ export function closeEnough(actual, expected, absoluteTolerance, relativeToleran
     return Math.abs(actual - expected) <= absoluteTolerance + relativeTolerance * Math.max(Math.abs(actual), Math.abs(expected));
 }
 
-export const nodeIds = { source: 1, squarer: 2, adder: 3, coupled: 4 };
-export const stateIds = { source: 11, squarer: 12, adder: 13, coupled: 14 };
+export const nodeIds = { source: 1, squarer: 2, adder: 3, coupled: 4, algebraic: 5 };
+export const stateIds = { source: 11, squarer: 12, adder: 13, coupled: 14, driver: 15, doubled: 16, shifted: 17, follower: 18 };
 export const paramIds = { k: 21, growth: 22, coupling: 23 };
 
 export const document = {
@@ -79,6 +80,46 @@ export const document = {
             states: [{ id: stateIds.coupled, name: 'Value', symbol: 'value', initialValue: 2, unit: '' }],
             numerics: { substepsPerGlobalStep: 1 },
             sourceTerms: []
+        },
+        {
+            id: nodeIds.algebraic, name: 'Algebraic',
+            states: [
+                { id: stateIds.driver, name: 'Driver', symbol: 'driver', initialValue: 1, unit: '' },
+                { id: stateIds.doubled, name: 'Doubled', symbol: 'doubled', initialValue: 0, unit: '' },
+                { id: stateIds.shifted, name: 'Shifted', symbol: 'shifted', initialValue: 0, unit: '' },
+                { id: stateIds.follower, name: 'Follower', symbol: 'follower', initialValue: 0, unit: '' }
+            ],
+            numerics: { substepsPerGlobalStep: 2 },
+            sourceTerms: [
+                {
+                    id: 103, state: 'driver', expression: '0.5',
+                    expressionModel: { latex: '0.5', bindings: [], output: { stateId: stateIds.driver }, mathJson: '0.5' }
+                },
+                {
+                    id: 104, state: 'shifted', expression: 'doubled + 1', setsValue: true,
+                    expressionModel: {
+                        latex: 'y + 1', bindings: [{ kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.doubled, symbol: 'y' }],
+                        output: { stateId: stateIds.shifted }, mathJson: ['Add', 'y', '1']
+                    }
+                },
+                {
+                    id: 105, state: 'doubled', expression: '2 driver', setsValue: true,
+                    expressionModel: {
+                        latex: '2 x', bindings: [{ kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.driver, symbol: 'x' }],
+                        output: { stateId: stateIds.doubled }, mathJson: ['Multiply', '2', 'x']
+                    }
+                },
+                {
+                    id: 106, state: 'follower', expression: '0.8 (shifted - follower)',
+                    expressionModel: {
+                        latex: '0.8 (s - f)', bindings: [
+                            { kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.shifted, symbol: 's' },
+                            { kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.follower, symbol: 'f' }
+                        ],
+                        output: { stateId: stateIds.follower }, mathJson: ['Multiply', '0.8', ['Add', 's', ['Negate', 'f']]]
+                    }
+                }
+            ]
         }
     ],
     edges: [
@@ -111,10 +152,15 @@ export const document = {
 // Order matches document.nodes' flattened states -- the same convention codeExportFidelity.mjs
 // and fmiCodeGen.mjs's assignValueReferences() both already rely on (states get value references
 // 0..stateCount-1 in this exact order).
-export const orderedStateNames = ['Source.Level', 'Squarer.Value', 'Adder.Value', 'Coupled.Value'];
+export const orderedStateNames = [
+    'Source.Level', 'Squarer.Value', 'Adder.Value', 'Coupled.Value',
+    'Algebraic.Driver', 'Algebraic.Doubled', 'Algebraic.Shifted', 'Algebraic.Follower'
+];
 export const stateNameByStateId = {
     [stateIds.source]: 'Source.Level', [stateIds.squarer]: 'Squarer.Value',
-    [stateIds.adder]: 'Adder.Value', [stateIds.coupled]: 'Coupled.Value'
+    [stateIds.adder]: 'Adder.Value', [stateIds.coupled]: 'Coupled.Value',
+    [stateIds.driver]: 'Algebraic.Driver', [stateIds.doubled]: 'Algebraic.Doubled',
+    [stateIds.shifted]: 'Algebraic.Shifted', [stateIds.follower]: 'Algebraic.Follower'
 };
 
 export const globalTimeStep = 0.1;

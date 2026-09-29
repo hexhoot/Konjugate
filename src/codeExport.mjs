@@ -169,6 +169,9 @@ export function buildModel(sourceDocument) {
         localIndexByStateId: new Map(node.states.map((state, index) => [state.id, index])),
         substeps: node.numerics?.substepsPerGlobalStep ?? 1,
         contributions: [],
+        // setsValue source terms: recomputed and written directly at the start of every substep,
+        // never integrated (see applyAlgebraicTasks in engine/src/executionPlan.cpp).
+        algebraic: [],
         nodeProvider: null
     }));
     const nodePlanById = new Map(nodePlans.map((plan) => [plan.node.id, plan]));
@@ -176,7 +179,7 @@ export function buildModel(sourceDocument) {
     for (const plan of nodePlans) {
         for (const term of plan.node.sourceTerms ?? []) {
             const programmable = term.implementation != null;
-            plan.contributions.push(buildContribution({
+            (term.setsValue === true ? plan.algebraic : plan.contributions).push(buildContribution({
                 entityLabel: `source term on node "${plan.node.name}"`, ownerPlan: plan, alwaysLocal: true,
                 bindings: programmable ? term.implementation.bindings : term.expressionModel.bindings,
                 outputStateId: programmable ? term.implementation.output.stateId : term.expressionModel.output.stateId,
@@ -187,6 +190,7 @@ export function buildModel(sourceDocument) {
                 identifierField: programmable ? 'key' : 'symbol'
             }, stateRecord));
         }
+        plan.algebraic = orderAlgebraicTasks(plan);
         if (plan.node.implementation) plan.nodeProvider = buildNodeProvider(plan, stateRecord);
     }
 
@@ -230,6 +234,28 @@ export function buildModel(sourceDocument) {
     return { nodePlans, globalStateCount: globalIndex, stateRecord };
 }
 
+// Same order as the engine: an algebraic state bound by another algebraic term is computed first.
+function orderAlgebraicTasks(plan) {
+    const byOutput = new Map(plan.algebraic.map((task) => [task.outputStateId, task]));
+    const ordered = [];
+    const visiting = new Set();
+    const done = new Set();
+    const visit = (task) => {
+        if (done.has(task)) return;
+        if (visiting.has(task)) throw new Error(`Algebraic (setsValue) source terms on node "${plan.node.name}" depend on each other in a cycle.`);
+        visiting.add(task);
+        for (const stateId of task.boundStateIds) {
+            const dependency = byOutput.get(stateId);
+            if (dependency && dependency !== task) visit(dependency);
+        }
+        visiting.delete(task);
+        done.add(task);
+        ordered.push(task);
+    };
+    plan.algebraic.forEach(visit);
+    return ordered;
+}
+
 function buildContribution(spec, stateRecord) {
     const { entityLabel, ownerPlan, alwaysLocal, bindings, outputStateId, mathJson, implementation, negate, parameters, identifierField } = spec;
     const outputLocalIndex = ownerPlan.localIndexByStateId.get(outputStateId);
@@ -254,7 +280,8 @@ function buildContribution(spec, stateRecord) {
                 : { text: `snapshot[${record.globalIndex}]`, comment: `${record.node.name}.${record.state.name}` });
         }
     }
-    return { entityLabel, outputLocalIndex, negate, symbols, mathJson, implementation };
+    const boundStateIds = (bindings ?? []).filter((binding) => binding.kind !== 'parameter').map((binding) => binding.stateId);
+    return { entityLabel, outputStateId, outputLocalIndex, negate, symbols, mathJson, implementation, boundStateIds };
 }
 
 function buildNodeProvider(plan, stateRecord) {
@@ -269,7 +296,7 @@ function buildNodeProvider(plan, stateRecord) {
     const outputs = (implementation.outputs ?? []).map((output) => {
         const localIndex = plan.localIndexByStateId.get(output.stateId);
         if (localIndex === undefined) throw new Error(`A computational-node provider output on node "${plan.node.name}" targets a state not on this node.`);
-        return { key: output.key, localIndex };
+        return { key: output.key, localIndex, setsValue: output.setsValue === true };
     });
     return { entityLabel: `computational-node provider on node "${plan.node.name}"`, implementation, symbols, outputs };
 }
@@ -294,7 +321,7 @@ export function collectProviders(model, kind) {
         providers.push(owner);
     };
     for (const plan of model.nodePlans) {
-        for (const contribution of plan.contributions) visit(contribution);
+        for (const contribution of [...plan.algebraic, ...plan.contributions]) visit(contribution);
         if (plan.nodeProvider) {
             if (kind === 'cpp') throw new Error(`The computational-node provider on node "${plan.node.name}" has no C++ equivalent in the engine -- export to C++ is blocked for this model.`);
             visit(plan.nodeProvider);
@@ -469,6 +496,38 @@ export function emitCppRegularContribution(contribution) {
     ].filter(Boolean).join('\n');
 }
 
+// An algebraic state is a plain replacement, written before this substep's derivatives are
+// evaluated so they (and any later algebraic term) read the fresh value.
+export function emitCppAlgebraicTask(task, info) {
+    const lines = ['        {', ...commentLines(task.symbols, '            ', '//')];
+    if (task.implementation) {
+        const keys = Array.from(task.symbols.keys());
+        const values = keys.map((key) => task.symbols.get(key).text).join(', ') || '0.0';
+        const keyLiterals = keys.map((key) => `std::string_view("${key}")`).join(', ') || 'std::string_view("")';
+        lines.push(
+            `            const double inputValues[] = { ${values} };`,
+            `            const std::string_view inputKeys[] = { ${keyLiterals} };`,
+            '            konjugate::sdk::v1::OutputCollector outputCollector;',
+            // End of the substep, like the engine: the result is the state's value once it completes.
+            `            ${info.instanceVariable}->evaluate({stepTime + nodeTimeStep, nodeTimeStep, konjugate::sdk::v1::InputView(inputValues, inputKeys)}, outputCollector);`,
+            '            const double algebraicValue = outputCollector.gradient();'
+        );
+    } else {
+        const symbols = new Map(Array.from(task.symbols, ([key, value]) => [key, value.text]));
+        lines.push(`            const double algebraicValue = ${emitExpression(compileExpressionNode(task.mathJson), symbols, cppOperators)};`);
+    }
+    lines.push(
+        '            if (!std::isfinite(algebraicValue)) throw std::runtime_error("An algebraic source term produced a non-finite value.");',
+        `            state[${task.outputLocalIndex}] = algebraicValue;`,
+        '        }'
+    );
+    return lines.join('\n');
+}
+
+export function cppAlgebraicLines(plan, providerInfo) {
+    return plan.algebraic.map((task) => emitCppAlgebraicTask(task, providerInfo.get(task))).join('\n');
+}
+
 export function emitCppProviderContribution(contribution, info) {
     const keys = Array.from(contribution.symbols.keys());
     const values = keys.map((key) => contribution.symbols.get(key).text).join(', ') || '0.0';
@@ -511,6 +570,7 @@ function cppNodeIntegratorLambdas(model, providerInfo) {
             `        const double nodeTimeStep = globalTimeStep / ${plan.substeps}.0;`,
             `        for (int substep = 0; substep < ${plan.substeps}; ++substep) {`,
             '            const double stepTime = currentTime + substep * nodeTimeStep;',
+            cppAlgebraicLines(plan, providerInfo),
             `            double derivative[${stateCount}] = {};`,
             contributionLines,
             `            for (int index = 0; index < ${stateCount}; ++index) state[index] += nodeTimeStep * derivative[index];`,
@@ -766,9 +826,32 @@ function emitPythonProviderContribution(contribution, info) {
     ].filter(Boolean).join('\n');
 }
 
+function emitPythonAlgebraicTask(task, info) {
+    const lines = [...commentLines(task.symbols, '        ', '#')];
+    if (task.implementation) {
+        lines.push(
+            '        outputs = OutputCollector()',
+            // End of the substep, like the engine: the result is the state's value once it completes.
+            `        ${info.instanceVariable}.evaluate(EvaluationContext(step_time + node_time_step, node_time_step), InputView(${pythonSymbolsDict(task.symbols)}), outputs)`,
+            '        algebraic_value = outputs.gradient'
+        );
+    } else {
+        const symbols = new Map(Array.from(task.symbols, ([key, value]) => [key, value.text]));
+        lines.push(`        algebraic_value = ${emitExpression(compileExpressionNode(task.mathJson), symbols, pythonOperators)}`);
+    }
+    lines.push(
+        '        if not math.isfinite(algebraic_value): raise RuntimeError("An algebraic source term produced a non-finite value.")',
+        `        state[${task.outputLocalIndex}] = algebraic_value`
+    );
+    return lines.join('\n');
+}
+
 function emitPythonNodeProvider(nodeProvider, info) {
-    const outputLines = nodeProvider.outputs.map((output) => (
-        `        derivative[${output.localIndex}] += node_outputs.gradients.get("${output.key}", 0.0)`
+    // setsValue outputs are written after every contribution has been evaluated, as the engine
+    // does, so no contribution in this substep sees them early.
+    const outputLines = nodeProvider.outputs.map((output) => (output.setsValue
+        ? `        pending_algebraic.append((${output.localIndex}, node_outputs.gradients.get("${output.key}", 0.0)))`
+        : `        derivative[${output.localIndex}] += node_outputs.gradients.get("${output.key}", 0.0)`
     ));
     return [
         ...commentLines(nodeProvider.symbols, '        ', '#'),
@@ -792,6 +875,8 @@ function pythonNodeBlockLines(model, providerInfo, isMpi) {
                 : emitPythonRegularContribution(contribution)
         )).join('\n');
         const nodeProviderLines = plan.nodeProvider ? emitPythonNodeProvider(plan.nodeProvider, providerInfo.get(plan.nodeProvider)) : '';
+        const algebraicLines = plan.algebraic.map((task) => emitPythonAlgebraicTask(task, providerInfo.get(task))).join('\n');
+        const hasPendingAlgebraic = plan.nodeProvider?.outputs.some((output) => output.setsValue);
         const commitLines = plan.node.states.map((state, index) => (
             `    global_state[${model.stateRecord.get(state.id).globalIndex}] = state[${index}]`
         )).join('\n');
@@ -801,9 +886,12 @@ function pythonNodeBlockLines(model, providerInfo, isMpi) {
             `    node_time_step = global_time_step / ${plan.substeps}`,
             `    for substep in range(${plan.substeps}):`,
             '        step_time = current_time + substep * node_time_step',
+            algebraicLines,
             `        derivative = [0.0] * ${stateCount}`,
+            hasPendingAlgebraic ? '        pending_algebraic = []' : '',
             contributionLines,
             nodeProviderLines,
+            hasPendingAlgebraic ? '        for index, value in pending_algebraic:\n            if not math.isfinite(value): raise RuntimeError("An algebraic output produced a non-finite value.")\n            state[index] = value' : '',
             `        for index in range(${stateCount}):`,
             '            state[index] += node_time_step * derivative[index]',
             commitLines

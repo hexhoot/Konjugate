@@ -28,7 +28,7 @@ import { unzipSync } from 'fflate';
 import { generateFmuPackage } from '../../src/fmiExport.mjs';
 import {
     absoluteTolerance, closeEnough, communicationStepSize, document, execute,
-    globalTimeStep, relativeTolerance, runRealEngine, stateIds, stateNameByStateId, targetTime
+    globalTimeStep, orderedStateNames, relativeTolerance, runRealEngine, stateIds, stateNameByStateId, targetTime
 } from './fixtures/fmuFidelityFixture.mjs';
 
 const executable = process.argv[2] ?? join(import.meta.dirname, '..', '..', 'out', 'engine', process.platform === 'win32' ? 'konjugateEngine.exe' : 'konjugateEngine');
@@ -90,7 +90,7 @@ print(json.dumps(rows))
                 comparisons += 1;
             }
         }
-        assert.ok(comparisons >= 4 * (engineResult.samples.length), 'Expected all 4 states compared at every sampled time.');
+        assert.ok(comparisons >= orderedStateNames.length * engineResult.samples.length, `Expected all ${orderedStateNames.length} states compared at every sampled time.`);
 
         // --- 5. rollback: capture state mid-run, step further, roll back, confirm an exact match ---
         // via FMPy's low-level FMU2Slave API (the high-level simulate_fmu wrapper has no get/set

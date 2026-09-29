@@ -90,7 +90,7 @@ try {
             comparisons += 1;
         }
     }
-    assert.ok(comparisons >= 4 * engineResult.samples.length, 'Expected all 4 states compared at every sampled time.');
+    assert.ok(comparisons >= orderedStateNames.length * engineResult.samples.length, `Expected all ${orderedStateNames.length} states compared at every sampled time.`);
     console.log(`✓ FMU round trip (no third-party FMI tool): runFmu matched the real engine across ${comparisons} state/time comparisons, rollback self-check passed.`);
 } finally {
     await rm(directory, { recursive: true, force: true });
