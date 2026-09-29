@@ -286,3 +286,11 @@ test('a node-level computational provider always blocks C++ export', () => {
     assert.match(python, /class ControllerProvider0\(NodeProvider\):/);
     assert.match(python, /node_outputs\.gradients\.get\("rate", 0\.0\)/);
 });
+
+test('a cases expression exports as a conditional in both languages', async () => {
+    const { compileExpressionNode, emitExpression, cppOperators } = await import('../src/codeExport.mjs');
+    const expression = ['Which', ['Less', 0, 'x', 1], 'a', ['Not', ['Equal', 'x', 2]], 2, 'True', 3];
+    const symbols = new Map([['x', 'x'], ['a', 'a']]);
+    assert.equal(emitExpression(compileExpressionNode(expression), symbols, cppOperators),
+        '(((0 < x) && (x < 1)) ? a : ((!((x == 2))) ? 2 : 3))');
+});

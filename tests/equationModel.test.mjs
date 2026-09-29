@@ -47,3 +47,19 @@ test('rejects unknown symbols and unsupported assignments', () => {
     assert.match(validateEquationLatex('mystery+1', bindings).errors.join(' '), /Unknown/);
     assert.match(validateEquationLatex('x=2', bindings).errors.join(' '), /Unsupported/);
 });
+
+test('accepts a cases expression and rejects comparisons outside its conditions', () => {
+    const bindings = [{ symbol: 'sourceStock' }, { symbol: 'rate' }];
+    const valid = validateEquationLatex(String.raw`\begin{cases} \mathrm{rate} & \text{if } \mathrm{sourceStock} > 0 \land \mathrm{rate} \le 5 \\ 0 & \text{otherwise} \end{cases}`, bindings);
+    assert.equal(valid.valid, true, valid.errors.join(' '));
+    assert.equal(valid.mathJson[0], 'Which');
+    assert.deepEqual(valid.mathJson.slice(2), ['rate', 'True', 0]);
+
+    const noOtherwise = validateEquationLatex(String.raw`\begin{cases} \mathrm{rate} & \mathrm{sourceStock} > 0 \end{cases}`, bindings);
+    assert.equal(noOtherwise.valid, false);
+    assert.match(noOtherwise.errors.join(' '), /otherwise/);
+
+    const bareComparison = validateEquationLatex(String.raw`\mathrm{sourceStock} > 0`, bindings);
+    assert.equal(bareComparison.valid, false);
+    assert.match(bareComparison.errors.join(' '), /condition of a cases expression/);
+});

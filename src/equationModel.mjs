@@ -5,8 +5,11 @@ import { ComputeEngine } from '@cortex-js/compute-engine';
 const computeEngine = new ComputeEngine();
 const allowedOperators = new Set([
     'Abs', 'Add', 'Cos', 'Divide', 'Exp', 'Ln', 'Log', 'Max', 'Min', 'Multiply',
-    'Negate', 'Power', 'Root', 'Sin', 'Sqrt', 'Subtract', 'Tan'
+    'Negate', 'Power', 'Root', 'Sin', 'Sqrt', 'Subtract', 'Tan',
+    // \begin{cases} and the comparisons/logic its conditions use
+    'Which', 'Less', 'LessEqual', 'Greater', 'GreaterEqual', 'Equal', 'NotEqual', 'And', 'Or', 'Not'
 ]);
+const conditionOperators = new Set(['Less', 'LessEqual', 'Greater', 'GreaterEqual', 'Equal', 'NotEqual', 'And', 'Or', 'Not']);
 
 function upperFirst(value) {
     return value ? `${value[0].toUpperCase()}${value.slice(1)}` : '';
@@ -64,6 +67,37 @@ function collectUnsupportedOperators(expression, unsupported = new Set()) {
     return unsupported;
 }
 
+// Mirrors the engine's typed check (engine/src/modelValidator.cpp): comparisons only as cases
+// conditions, numbers everywhere else, and every cases expression ends in an otherwise branch.
+function collectConditionErrors(expression, condition = false, errors = new Set()) {
+    if (!Array.isArray(expression)) {
+        const isBoolean = expression === 'True' || expression === 'False';
+        if (condition && !isBoolean) errors.add('A condition must be a comparison such as x > 0.');
+        if (!condition && isBoolean) errors.add('True/False can only be used as a condition.');
+        return errors;
+    }
+    const [operator, ...operands] = expression;
+    const isCondition = conditionOperators.has(operator);
+    if (isCondition && !condition) {
+        errors.add('Unsupported comparison: comparisons can only be used as the condition of a cases expression.');
+        return errors;
+    }
+    if (!isCondition && condition) {
+        errors.add('A condition must be a comparison such as x > 0.');
+        return errors;
+    }
+    if (operator === 'Which') {
+        operands.forEach((operand, index) => collectConditionErrors(operand, index % 2 === 0, errors));
+        if (operands.length < 2 || operands.length % 2 !== 0 || operands[operands.length - 2] !== 'True') {
+            errors.add('A cases expression needs a final \\text{otherwise} branch.');
+        }
+        return errors;
+    }
+    const childCondition = operator === 'And' || operator === 'Or' || operator === 'Not';
+    operands.forEach((operand) => collectConditionErrors(operand, childCondition, errors));
+    return errors;
+}
+
 export function validateEquationLatex(latex, bindings = []) {
     if (!latex?.trim()) return { valid: false, mathJson: null, symbols: [], errors: ['Enter an expression.'] };
     const expression = computeEngine.parse(latex);
@@ -73,6 +107,7 @@ export function validateEquationLatex(latex, bindings = []) {
     if (unknownSymbols.length) errors.push(`Unknown ${unknownSymbols.length === 1 ? 'symbol' : 'symbols'}: ${unknownSymbols.join(', ')}.`);
     const unsupported = [...collectUnsupportedOperators(expression.json)];
     if (unsupported.length) errors.push(`Unsupported ${unsupported.length === 1 ? 'operation' : 'operations'}: ${unsupported.join(', ')}.`);
+    else errors.push(...collectConditionErrors(expression.json));
     return {
         valid: errors.length === 0,
         mathJson: expression.json,

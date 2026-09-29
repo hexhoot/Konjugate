@@ -36,7 +36,7 @@ For an executable relationship, `equationModel` is required and contains:
 - `latex`: the editable presentation expression.
 - `bindings`: integer-ID-backed state and parameter bindings with stable expression symbols.
 - `output`: the state receiving the expression's derivative contribution.
-- `mathJson`: the executable expression tree. Version 1 supports numeric literals, bound symbols, `Add`, `Multiply`, `Negate`, `Divide`, `Power`, `Sqrt`, `Abs`, `Exp`, `Ln`, `Log`, `Sin`, `Cos`, `Tan`, `Min`, and `Max`.
+- `mathJson`: the executable expression tree. Version 1 supports numeric literals, bound symbols, `Add`, `Multiply`, `Negate`, `Divide`, `Power`, `Sqrt`, `Abs`, `Exp`, `Ln`, `Log`, `Sin`, `Cos`, `Tan`, `Min`, `Max`, and `Which`. `Which` is a piecewise value (LaTeX `\begin{cases}`): `(condition, value)` pairs where the first true condition's value is used and only that value is evaluated. Its last condition must be `True` (`\text{otherwise}`). Conditions are `Less`, `LessEqual`, `Greater`, `GreaterEqual`, `Equal`, `NotEqual` (chained comparisons such as `0 < x < 1` require every adjacent pair to hold) combined with `And`, `Or` and `Not`, and are only valid as `Which` conditions, never as values.
 
 LaTeX is never executed directly. Multiple relationships targeting the same state contribute additively to its derivative.
 

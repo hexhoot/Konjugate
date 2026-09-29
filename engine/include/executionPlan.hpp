@@ -37,7 +37,20 @@ enum class ExpressionOperation {
     cosine,
     tangent,
     minimum,
-    maximum
+    maximum,
+    // Piecewise support: MathJSON "Which" (LaTeX \begin{cases}) plus the comparisons and logic
+    // its conditions are built from. Comparisons and logic evaluate to 1 or 0; the validator only
+    // allows them in condition positions, so they never leak into a numeric result.
+    conditional,
+    less,
+    lessEqual,
+    greater,
+    greaterEqual,
+    equal,
+    notEqual,
+    logicalAnd,
+    logicalOr,
+    logicalNot
 };
 
 struct CompiledExpression {

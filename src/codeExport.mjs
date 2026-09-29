@@ -24,7 +24,28 @@ import { resolveSharedParameters } from './sharedParameters.mjs';
 
 const numericLiteralPattern = /^-?\d+(\.\d+)?([eE]-?\d+)?$/;
 
-const minimumArgumentCounts = { Negate: 1, Divide: 2, Power: 2, Sqrt: 1, Abs: 1, Exp: 1, Ln: 1, Log: 1, Sin: 1, Cos: 1, Tan: 1, Min: 2, Max: 2 };
+const minimumArgumentCounts = {
+    Negate: 1, Divide: 2, Power: 2, Sqrt: 1, Abs: 1, Exp: 1, Ln: 1, Log: 1, Sin: 1, Cos: 1, Tan: 1, Min: 2, Max: 2,
+    Which: 2, Less: 2, LessEqual: 2, Greater: 2, GreaterEqual: 2, Equal: 2, NotEqual: 2, And: 2, Or: 2, Not: 1
+};
+
+// Chained comparisons (0 < x < 1) hold only when every adjacent pair does, matching the engine.
+function chainedComparison(symbol, joiner) {
+    return (args) => `(${args.slice(1).map((right, index) => `(${args[index]} ${symbol} ${right})`).join(` ${joiner} `)})`;
+}
+
+// "Which" is (condition, value) pairs; the last condition is always true once validated, so it
+// becomes the final else. Anything else falls through to NaN, which fails the run the same way the
+// engine's "no branch matched" error does.
+function whichEmitter(conditional, fallback) {
+    return (args, nodes) => {
+        const lastIsOtherwise = nodes.length >= 2 && nodes[nodes.length - 2].boolean === true;
+        const pairs = lastIsOtherwise ? args.length - 2 : args.length;
+        let result = lastIsOtherwise ? args[args.length - 1] : fallback;
+        for (let index = pairs - 2; index >= 0; index -= 2) result = conditional(args[index], args[index + 1], result);
+        return result;
+    };
+}
 
 export const cppOperators = {
     Add: (args) => (args.length ? `(${args.join(' + ')})` : '0.0'),
@@ -41,7 +62,19 @@ export const cppOperators = {
     Cos: (args) => `std::cos(${args[0]})`,
     Tan: (args) => `std::tan(${args[0]})`,
     Min: (args) => `std::min(${args[0]}, ${args[1]})`,
-    Max: (args) => `std::max(${args[0]}, ${args[1]})`
+    Max: (args) => `std::max(${args[0]}, ${args[1]})`,
+    Which: whichEmitter((condition, value, otherwise) => `(${condition} ? ${value} : ${otherwise})`, 'std::nan("")'),
+    Less: chainedComparison('<', '&&'),
+    LessEqual: chainedComparison('<=', '&&'),
+    Greater: chainedComparison('>', '&&'),
+    GreaterEqual: chainedComparison('>=', '&&'),
+    Equal: chainedComparison('==', '&&'),
+    NotEqual: (args) => `(${args[0]} != ${args[1]})`,
+    And: (args) => `(${args.join(' && ')})`,
+    Or: (args) => `(${args.join(' || ')})`,
+    Not: (args) => `(!${args[0]})`,
+    True: 'true',
+    False: 'false'
 };
 
 // math.pow/math.sqrt/math.log raise ValueError on inputs where std::pow/std::sqrt/std::log would
@@ -63,7 +96,19 @@ const pythonOperators = {
     Cos: (args) => `math.cos(${args[0]})`,
     Tan: (args) => `math.tan(${args[0]})`,
     Min: (args) => `min(${args[0]}, ${args[1]})`,
-    Max: (args) => `max(${args[0]}, ${args[1]})`
+    Max: (args) => `max(${args[0]}, ${args[1]})`,
+    Which: whichEmitter((condition, value, otherwise) => `(${value} if ${condition} else ${otherwise})`, "float('nan')"),
+    Less: chainedComparison('<', 'and'),
+    LessEqual: chainedComparison('<=', 'and'),
+    Greater: chainedComparison('>', 'and'),
+    GreaterEqual: chainedComparison('>=', 'and'),
+    Equal: chainedComparison('==', 'and'),
+    NotEqual: (args) => `(${args[0]} != ${args[1]})`,
+    And: (args) => `(${args.join(' and ')})`,
+    Or: (args) => `(${args.join(' or ')})`,
+    Not: (args) => `(not ${args[0]})`,
+    True: 'True',
+    False: 'False'
 };
 
 export function doubleLiteral(value) {
@@ -81,11 +126,13 @@ export function compileExpressionNode(node) {
         return { op: operator, args: args.map(compileExpressionNode) };
     }
     const text = String(node);
+    if (text === 'True' || text === 'False') return { boolean: text === 'True' };
     return numericLiteralPattern.test(text) ? { literal: Number(text) } : { symbol: text };
 }
 
 export function emitExpression(node, symbols, operators) {
     if ('literal' in node) return doubleLiteral(node.literal);
+    if ('boolean' in node) return operators[node.boolean ? 'True' : 'False'];
     if ('symbol' in node) {
         const resolved = symbols.get(node.symbol);
         if (!resolved) throw new Error(`Unknown executable symbol: ${node.symbol}.`);
@@ -95,7 +142,7 @@ export function emitExpression(node, symbols, operators) {
     if (!emitter) throw new Error(`Unsupported executable operation: ${node.op}.`);
     const minimum = minimumArgumentCounts[node.op] ?? 0;
     if (node.args.length < minimum) throw new Error(`An expression is missing an argument for ${node.op}.`);
-    return emitter(node.args.map((argument) => emitExpression(argument, symbols, operators)));
+    return emitter(node.args.map((argument) => emitExpression(argument, symbols, operators)), node.args);
 }
 
 // ---- graph build: mirrors engine/src/executionPlan.cpp's compileExecutionPlan exactly enough to

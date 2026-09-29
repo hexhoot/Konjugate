@@ -156,11 +156,23 @@ bool numericToken(const std::string& token) {
     return end == token.c_str() + token.size();
 }
 
-void validateMathJson(const boost::property_tree::ptree& expression,
-                      const std::set<std::string>& symbols,
-                      std::vector<std::string>& errors) {
+// Expressions are typed: numeric everywhere except the conditions of a "Which" (LaTeX cases),
+// which must be comparisons or logic over comparisons. Keeping the two apart means a comparison's
+// 1/0 never silently becomes a number in a derivative.
+void validateTypedMathJson(const boost::property_tree::ptree& expression,
+                           const std::set<std::string>& symbols,
+                           std::vector<std::string>& errors,
+                           bool condition) {
     if (expression.empty()) {
         const auto token = expression.data();
+        if (token == "True" || token == "False") {
+            if (!condition) errors.push_back("True/False can only be used as a condition.");
+            return;
+        }
+        if (condition) {
+            errors.push_back("A condition must be a comparison such as x > 0.");
+            return;
+        }
         if (!numericToken(token) && !symbols.contains(token)) errors.push_back("Unknown executable symbol: " + token + ".");
         return;
     }
@@ -171,15 +183,54 @@ void validateMathJson(const boost::property_tree::ptree& expression,
         return;
     }
     const auto operation = items.front()->data();
+    const auto arguments = items.size() - 1;
     const std::set<std::string> unary = {"Abs", "Cos", "Exp", "Ln", "Log", "Negate", "Sin", "Sqrt", "Tan"};
     const std::set<std::string> binary = {"Divide", "Max", "Min", "Power"};
-    if ((!unary.contains(operation) && !binary.contains(operation) && operation != "Add" && operation != "Multiply") ||
-        (unary.contains(operation) && items.size() != 2) || (binary.contains(operation) && items.size() != 3) ||
-        ((operation == "Add" || operation == "Multiply") && items.size() < 3)) {
+    const std::set<std::string> comparisons = {"Less", "LessEqual", "Greater", "GreaterEqual", "Equal", "NotEqual"};
+    const bool numericOperation = unary.contains(operation) || binary.contains(operation) || operation == "Add" || operation == "Multiply" || operation == "Which";
+    const bool booleanOperation = comparisons.contains(operation) || operation == "And" || operation == "Or" || operation == "Not";
+    if (!numericOperation && !booleanOperation) {
         errors.push_back("Unsupported or malformed executable operation: " + operation + ".");
         return;
     }
-    for (std::size_t index = 1; index < items.size(); ++index) validateMathJson(*items[index], symbols, errors);
+    if (booleanOperation && !condition) {
+        errors.push_back("A comparison (" + operation + ") can only be used as the condition of a cases expression.");
+        return;
+    }
+    if (numericOperation && condition) {
+        errors.push_back("A condition must be a comparison such as x > 0.");
+        return;
+    }
+    const bool malformed =
+        (unary.contains(operation) && arguments != 1) || (binary.contains(operation) && arguments != 2) ||
+        ((operation == "Add" || operation == "Multiply") && arguments < 2) ||
+        (operation == "Which" && (arguments < 2 || arguments % 2 != 0)) ||
+        (operation == "NotEqual" && arguments != 2) ||
+        (comparisons.contains(operation) && arguments < 2) ||
+        ((operation == "And" || operation == "Or") && arguments < 2) ||
+        (operation == "Not" && arguments != 1);
+    if (malformed) {
+        errors.push_back("Unsupported or malformed executable operation: " + operation + ".");
+        return;
+    }
+    if (operation == "Which") {
+        for (std::size_t index = 1; index < items.size(); ++index) {
+            validateTypedMathJson(*items[index], symbols, errors, index % 2 == 1);
+        }
+        const auto& lastCondition = *items[items.size() - 2];
+        if (!lastCondition.empty() || lastCondition.data() != "True") {
+            errors.push_back("A cases expression needs a final \\text{otherwise} branch.");
+        }
+        return;
+    }
+    const bool childCondition = operation == "And" || operation == "Or" || operation == "Not";
+    for (std::size_t index = 1; index < items.size(); ++index) validateTypedMathJson(*items[index], symbols, errors, childCondition);
+}
+
+void validateMathJson(const boost::property_tree::ptree& expression,
+                      const std::set<std::string>& symbols,
+                      std::vector<std::string>& errors) {
+    validateTypedMathJson(expression, symbols, errors, false);
 }
 
 std::vector<std::string> equationErrors(const boost::property_tree::ptree& edge,
@@ -193,7 +244,14 @@ std::vector<std::string> equationErrors(const boost::property_tree::ptree& edge,
         else if (character == '}' && --braces < 0) break;
     }
     if (braces != 0) errors.push_back("The LaTeX expression has unbalanced braces.");
-    if (latex.find('=') != std::string::npos) errors.push_back("Assignments are not supported in relationship expressions.");
+    // An equality condition inside cases is fine; top-level "a = b" is still caught here (and as a
+    // misplaced comparison by the typed MathJSON check).
+    const bool hasCases = latex.find("\\begin{cases}") != std::string::npos;
+    if (!hasCases && latex.find('=') != std::string::npos) errors.push_back("Assignments are not supported in relationship expressions.");
+    const std::regex environmentExpression(R"(\\begin\{([A-Za-z*]+)\})");
+    for (auto match = std::sregex_iterator(latex.begin(), latex.end(), environmentExpression); match != std::sregex_iterator(); ++match) {
+        if ((*match)[1].str() != "cases") errors.push_back("Unsupported LaTeX environment: " + (*match)[1].str() + ".");
+    }
 
     std::set<std::string> knownSymbols;
     const auto addStates = [&](const boost::property_tree::ptree& node, const std::string& role) {
@@ -220,10 +278,15 @@ std::vector<std::string> equationErrors(const boost::property_tree::ptree& edge,
         std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (!operatorNames.contains(name)) errors.push_back("\\operatorname{} does not name a supported function: " + (*match)[1].str() + ".");
     }
-    const auto latexWithoutOperatorname = std::regex_replace(latex, operatornameExpression, " ");
+    // Strip the cases environment markers and \text{...} labels ("if", "otherwise") so their words
+    // aren't scanned as commands or symbols below.
+    const std::regex casesMarkupExpression(R"(\\(?:begin|end)\{[A-Za-z*]+\}|\\text\{[^}]*\})");
+    const auto latexWithoutOperatorname = std::regex_replace(std::regex_replace(latex, operatornameExpression, " "), casesMarkupExpression, " ");
 
     const std::set<std::string> supportedCommands = {
-        "cdot", "cos", "exp", "frac", "left", "ln", "log", "max", "min", "mathrm", "right", "sin", "sqrt", "tan"
+        "cdot", "cos", "exp", "frac", "left", "ln", "log", "max", "min", "mathrm", "right", "sin", "sqrt", "tan",
+        // cases conditions
+        "ge", "geq", "gt", "land", "le", "leq", "lnot", "lor", "lt", "ne", "neg", "neq", "vee", "wedge"
     };
     const std::regex commandExpression(R"(\\([A-Za-z]+))");
     for (auto match = std::sregex_iterator(latexWithoutOperatorname.begin(), latexWithoutOperatorname.end(), commandExpression); match != std::sregex_iterator(); ++match) {

@@ -50,12 +50,29 @@ ExpressionOperation operationFromName(const std::string& name) {
     if (name == "Tan") return ExpressionOperation::tangent;
     if (name == "Min") return ExpressionOperation::minimum;
     if (name == "Max") return ExpressionOperation::maximum;
+    if (name == "Which") return ExpressionOperation::conditional;
+    if (name == "Less") return ExpressionOperation::less;
+    if (name == "LessEqual") return ExpressionOperation::lessEqual;
+    if (name == "Greater") return ExpressionOperation::greater;
+    if (name == "GreaterEqual") return ExpressionOperation::greaterEqual;
+    if (name == "Equal") return ExpressionOperation::equal;
+    if (name == "NotEqual") return ExpressionOperation::notEqual;
+    if (name == "And") return ExpressionOperation::logicalAnd;
+    if (name == "Or") return ExpressionOperation::logicalOr;
+    if (name == "Not") return ExpressionOperation::logicalNot;
     throw std::runtime_error("Unsupported executable operation: " + name + ".");
 }
 
 CompiledExpression compileExpression(const boost::property_tree::ptree& tree) {
     if (tree.empty()) {
         CompiledExpression expression;
+        // "True"/"False" appear as bare symbols in MathJSON -- "True" is the otherwise branch of
+        // a cases expression.
+        if (tree.data() == "True" || tree.data() == "False") {
+            expression.operation = ExpressionOperation::literal;
+            expression.literal = tree.data() == "True" ? 1.0 : 0.0;
+            return expression;
+        }
         try {
             expression.operation = ExpressionOperation::literal;
             expression.literal = finiteNumber(tree.data());
@@ -187,6 +204,48 @@ double CompiledExpression::evaluate(const std::vector<double>& symbols) const {
         case ExpressionOperation::tangent: return std::tan(argument(0));
         case ExpressionOperation::minimum: return std::min(argument(0), argument(1));
         case ExpressionOperation::maximum: return std::max(argument(0), argument(1));
+        case ExpressionOperation::conditional: {
+            // (condition, value) pairs, first true condition wins; only the chosen value is
+            // evaluated. The validator requires a final "True" (otherwise) branch.
+            for (std::size_t index = 0; index + 1 < arguments.size(); index += 2) {
+                if (arguments[index].evaluate(symbols) != 0.0) return arguments[index + 1].evaluate(symbols);
+            }
+            throw std::runtime_error("No branch of a cases expression matched.");
+        }
+        case ExpressionOperation::less:
+        case ExpressionOperation::lessEqual:
+        case ExpressionOperation::greater:
+        case ExpressionOperation::greaterEqual:
+        case ExpressionOperation::equal:
+        case ExpressionOperation::notEqual: {
+            // Chained, as MathJSON writes 0 < x < 1: every adjacent pair must hold.
+            if (arguments.size() < 2) throw std::runtime_error("Executable expression has too few arguments.");
+            double left = arguments[0].evaluate(symbols);
+            for (std::size_t index = 1; index < arguments.size(); ++index) {
+                const double right = arguments[index].evaluate(symbols);
+                bool holds = false;
+                switch (operation) {
+                    case ExpressionOperation::less: holds = left < right; break;
+                    case ExpressionOperation::lessEqual: holds = left <= right; break;
+                    case ExpressionOperation::greater: holds = left > right; break;
+                    case ExpressionOperation::greaterEqual: holds = left >= right; break;
+                    case ExpressionOperation::equal: holds = left == right; break;
+                    default: holds = left != right; break;
+                }
+                if (!holds) return 0.0;
+                left = right;
+            }
+            return 1.0;
+        }
+        case ExpressionOperation::logicalAnd: {
+            for (const auto& item : arguments) if (item.evaluate(symbols) == 0.0) return 0.0;
+            return 1.0;
+        }
+        case ExpressionOperation::logicalOr: {
+            for (const auto& item : arguments) if (item.evaluate(symbols) != 0.0) return 1.0;
+            return 0.0;
+        }
+        case ExpressionOperation::logicalNot: return argument(0) == 0.0 ? 1.0 : 0.0;
     }
     throw std::runtime_error("Executable expression operation is invalid.");
 }

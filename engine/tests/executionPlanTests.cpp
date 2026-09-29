@@ -36,6 +36,57 @@ konjugate::CompiledExpression add(std::initializer_list<konjugate::CompiledExpre
     return expression;
 }
 
+konjugate::CompiledExpression literal(double value) {
+    konjugate::CompiledExpression expression;
+    expression.literal = value;
+    return expression;
+}
+
+konjugate::CompiledExpression operation(konjugate::ExpressionOperation kind, std::initializer_list<konjugate::CompiledExpression> arguments) {
+    konjugate::CompiledExpression expression;
+    expression.operation = kind;
+    expression.arguments = arguments;
+    return expression;
+}
+
+void conditionalExpressionsPickTheFirstMatchingBranch() {
+    using Op = konjugate::ExpressionOperation;
+    // cases: 10 if x > 1, 20 if 0 < x <= 1, otherwise 30
+    const auto cases = operation(Op::conditional, {
+        operation(Op::greater, {symbol("x"), literal(1)}), literal(10),
+        operation(Op::less, {literal(0), symbol("x"), literal(1)}), literal(20),
+        operation(Op::lessEqual, {symbol("x"), literal(1)}), literal(25),
+        literal(1), literal(30)
+    });
+    require(cases.evaluate({2}) == 10, "The first true branch was not chosen.");
+    require(cases.evaluate({0.5}) == 20, "A chained comparison was not evaluated pairwise.");
+    require(cases.evaluate({1}) == 25, "A chained comparison should fail when any pair fails.");
+    require(cases.evaluate({-1}) == 25, "Branches must be tried in order.");
+    const auto otherwise = operation(Op::conditional, {operation(Op::greater, {symbol("x"), literal(0)}), literal(1), literal(1), literal(-1)});
+    require(otherwise.evaluate({-5}) == -1, "The otherwise branch was not used.");
+    // An untaken branch is never evaluated, so a division by zero there cannot poison the result.
+    const auto guarded = operation(Op::conditional, {
+        operation(Op::notEqual, {symbol("x"), literal(0)}), operation(Op::divide, {literal(1), symbol("x")}),
+        literal(1), literal(0)
+    });
+    require(guarded.evaluate({0}) == 0, "An untaken branch affected the result.");
+    const auto logic = operation(Op::conditional, {
+        operation(Op::logicalAnd, {operation(Op::greaterEqual, {symbol("x"), literal(0)}), operation(Op::logicalNot, {operation(Op::equal, {symbol("x"), literal(3)})})}), literal(1),
+        operation(Op::logicalOr, {operation(Op::equal, {symbol("x"), literal(3)}), operation(Op::less, {symbol("x"), literal(-10)})}), literal(2),
+        literal(1), literal(3)
+    });
+    require(logic.evaluate({1}) == 1, "And/Not were not evaluated.");
+    require(logic.evaluate({-20}) == 2, "Or was not evaluated.");
+    require(logic.evaluate({-1}) == 3, "Logic fell through incorrectly.");
+    bool threw = false;
+    try {
+        operation(Op::conditional, {operation(Op::greater, {symbol("x"), literal(0)}), literal(1)}).evaluate({-1});
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    require(threw, "A cases expression with no matching branch must fail loudly.");
+}
+
 void deterministicReductionUsesTaskSequence() {
     std::vector<konjugate::EvaluatedContribution> completedOutOfOrder = {
         {2, 1, 1},
@@ -538,6 +589,7 @@ void automaticBackendSelectionAccountsForWorkAndCommunication() {
 int main() {
     try {
         deterministicReductionUsesTaskSequence();
+        conditionalExpressionsPickTheFirstMatchingBranch();
         evaluationSeparatesLocalSnapshotAndLiveParameterInputs();
         parameterScheduleEvaluatesEachModeAndSupersedesEarlierSchedules();
         applyAlgebraicTasksSnapsMismatchedStateToTargetImmediately();
