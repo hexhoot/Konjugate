@@ -9159,7 +9159,10 @@ function renderExtensionsResults() {
         button.classList.toggle('selected', extensionsPackageKey(entry) === extensionsSelectedKey);
         button.classList.toggle('disabledItem', !entry.enabled);
         const meta = `${escapeHtml(entry.version)} · ${entry.source === 'bundled' ? 'Bundled' : 'Installed'}${entry.enabled ? '' : ' · Disabled'}`;
-        button.innerHTML = `<b>${escapeHtml(entry.name)}</b><span class="extensionsItemMeta">${meta}</span>`;
+        const description = registryDescriptionFor(entry.packageId);
+        button.innerHTML = `<b>${escapeHtml(entry.name)}</b>`
+            + (description ? `<p class="extensionsItemDescription">${escapeHtml(description)}</p>` : '')
+            + `<span class="extensionsItemMeta">${meta}</span>`;
         return button;
     }));
     $('#extensionsEmpty').textContent = extensionsTab === 'addon' ? 'No add-ons are installed.'
@@ -9205,6 +9208,16 @@ function isPackageIdInstalled(packageId) {
 // that shouldn't block on a network round trip just to show a cross-reference note.
 function registryBundleFor(packageId) {
     return discoverEntries.find((entry) => entry.packages.length > 1 && entry.packages.some((declared) => declared.packageId === packageId)) ?? null;
+}
+
+// Installed packages don't carry their own description (addon.json/plugin.json have no such
+// field) -- rather than adding one just for this, an installed item borrows its registry entry's
+// description when one is known, the same discoverEntries this dialog already fetches for the
+// bundle cross-reference above. Sideloaded/private packages with no registry entry, or a session
+// where the registry couldn't be reached, just show nothing extra -- the plain name/version/status
+// display this already had.
+function registryDescriptionFor(packageId) {
+    return discoverEntries.find((entry) => entry.packages.some((declared) => declared.packageId === packageId))?.description ?? null;
 }
 
 // A human-readable warning if uninstalling/disabling entry would leave an installed bundle sibling
@@ -9254,15 +9267,29 @@ function renderDiscoverResults() {
     $('#extensionsResults').replaceChildren(...matches.map((entry) => {
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'examplesExplorerItem extensionsItem';
+        button.className = 'examplesExplorerItem extensionsItem discoverItem';
         button.dataset.discoverPrefix = entry.prefix;
         button.classList.toggle('selected', entry.prefix === discoverSelectedPrefix);
         const installedCount = entry.packages.filter((declared) => isPackageIdInstalled(declared.packageId)).length;
         const allInstalled = installedCount === entry.packages.length;
         const partialInstalled = installedCount > 0 && !allInstalled;
-        const statusMeta = allInstalled ? ' · Installed' : partialInstalled ? ` · ${installedCount}/${entry.packages.length} Installed` : '';
-        const meta = `${entry.packages.length} ${entry.packages.length === 1 ? 'package' : 'packages'}${statusMeta}`;
-        button.innerHTML = `<b>${escapeHtml(entry.title || entry.prefix)}</b><span class="extensionsItemMeta">${escapeHtml(meta)}</span>`;
+        // A bare package count only says something once there's more than one to count -- the
+        // common single-package case gets the domain instead, which actually helps scanning a
+        // longer list. Any piece that has nothing to say is left out rather than shown empty.
+        const metaParts = [
+            entry.domain ? domainLabel(entry.domain) : null,
+            entry.packages.length > 1 ? `${entry.packages.length} packages` : null,
+            allInstalled ? 'Installed' : partialInstalled ? `${installedCount}/${entry.packages.length} Installed` : null
+        ].filter(Boolean);
+        // Discover mixes add-ons and plugins with no tab to separate them the way Installed does,
+        // so the type is worth a small badge here -- a bundle (Fintech) gets one badge per type it
+        // actually contains, not necessarily just one.
+        const typeBadges = [...new Set(entry.packages.map((declared) => declared.packageType))].sort()
+            .map((type) => `<span class="extensionsBadge">${type}</span>`).join('');
+        button.innerHTML = `<div class="discoverItemBadges">${typeBadges}</div>`
+            + `<b>${escapeHtml(entry.title || entry.prefix)}</b>`
+            + (entry.description ? `<p class="extensionsItemDescription">${escapeHtml(entry.description)}</p>` : '')
+            + (metaParts.length ? `<span class="extensionsItemMeta">${escapeHtml(metaParts.join(' · '))}</span>` : '');
         return button;
     }));
     $('#extensionsEmpty').textContent = 'No add-ons match the registry filters.';
@@ -9405,12 +9432,16 @@ async function openExtensionsDialog() {
     renderExtensionsDetail();
     $('#extensionsDialog').showModal();
     // Best-effort and non-blocking: the dialog opens immediately against local data, and the
-    // Installed detail pane's bundle cross-reference (registryBundleFor) fills in silently once this
-    // resolves, rather than making every dialog-open wait on a network round trip it doesn't need to
-    // show anything. Failure here just means no bundle info this session -- advisory only, per the
-    // design principles in docs/addonExplorer.md.
+    // Installed side's bundle cross-reference (registryBundleFor) and borrowed descriptions
+    // (registryDescriptionFor) fill in silently once this resolves, rather than making every
+    // dialog-open wait on a network round trip it doesn't need to show anything. Failure here just
+    // means no registry-sourced info this session -- advisory only, per the design principles in
+    // docs/addonExplorer.md.
     ensureDiscoverRegistry().then(() => {
-        if (extensionsMode === 'installed') renderExtensionsDetail();
+        if (extensionsMode === 'installed') {
+            renderExtensionsResults();
+            renderExtensionsDetail();
+        }
     }).catch(() => {});
 }
 

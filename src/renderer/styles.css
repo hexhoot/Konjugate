@@ -155,9 +155,13 @@ input, select, textarea { user-select: text; }
 /* A fixed height (not just a cap) on both the results grid and its detail-pane sibling below, so
    the dialog itself -- sized to its content, being a <dialog> -- doesn't grow or shrink as the
    list's item count or the detail pane's content (empty/Installed/Discover) changes between tabs,
-   modes, and selections. */
-.examplesExplorerResults { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; height: 380px; overflow-y: auto; }
-.examplesExplorerItem { display: grid; gap: 6px; padding: 8px; text-align: left; color: #aab9c1; background: #0a151d; border: 1px solid #2b3d48; border-radius: 5px; }
+   modes, and selections. align-content:start is required alongside it: a grid container with a
+   fixed height and only "auto"-sized rows otherwise stretches those rows to fill the leftover
+   space when there are few items (a 4-item list turning each item into a mostly-empty ~95px
+   block), and re-packs them tighter as more items arrive -- exactly backwards from a stable list,
+   where each item's height should come from its own content and stay put as the count changes. */
+.examplesExplorerResults { display: grid; grid-template-columns: repeat(2, 1fr); align-content: start; gap: 8px; height: 380px; overflow-y: auto; }
+.examplesExplorerItem { display: grid; align-content: start; gap: 6px; padding: 8px; text-align: left; color: #aab9c1; background: #0a151d; border: 1px solid #2b3d48; border-radius: 5px; }
 .examplesExplorerItem:hover { background: rgb(66 201 188 / 6%); border-color: #47736f; }
 .examplesExplorerItem.selected { background: rgb(66 201 188 / 10%); border-color: var(--accent, #42c9bc); }
 .examplesExplorerThumb { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; background: #060d12; border-radius: 3px; }
@@ -188,6 +192,12 @@ input, select, textarea { user-select: text; }
 .extensionsBody { margin-top: 12px; }
 .extensionsResults { grid-template-columns: 1fr; max-height: 380px; }
 .extensionsItem b { display: block; }
+/* Clamped to 2 lines rather than left unbounded, so a long description doesn't make one item much
+   taller than its neighbors -- every item's height should come from the same shape of content.
+   Shared by Discover's own entries and an Installed item borrowing its registry entry's
+   description (registryDescriptionFor) -- same shape of content either way. */
+.extensionsItemDescription { display: -webkit-box; margin: 0; overflow: hidden; color: #8199a3; font-size: 7.5px; line-height: 1.5; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.discoverItemBadges { display: flex; gap: 4px; margin-bottom: 3px; }
 .extensionsItemMeta { display: block; margin-top: 2px; color: #647984; font-size: 7px; }
 #extensionsRestartNotice { margin-top: 8px; }
 .extensionsRestartPendingNotice { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 8px 10px; color: #d6a35f; background: rgb(214 163 95 / 8%); border: 1px solid #4a3f2e; border-radius: 5px; font-size: 8px; }
