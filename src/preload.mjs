@@ -82,7 +82,12 @@ contextBridge.exposeInMainWorld('extensions', {
     restartPending: () => ipcRenderer.invoke('packageRestartPending'),
     onRestartPendingChange: (callback) => {
         ipcRenderer.on('packageRestartPendingChanged', (_event, pending) => callback(pending));
-    }
+    },
+    // One GitHub Releases API call per installed, registry-known package (see docs/addonExplorer.md's
+    // Update checking note) -- returns [{prefix, latestVersion, releaseUrl, outdated}] for whichever
+    // entries have a newer release than what's installed. Cached main-process side for an hour
+    // (shared across windows, cleared by any install/uninstall); force bypasses that cache.
+    checkUpdates: ({ force = false } = {}) => ipcRenderer.invoke('packageCheckUpdates', { force })
 });
 
 contextBridge.exposeInMainWorld('shapeLibrary', {

@@ -36,7 +36,7 @@ import { auxiliaryWindowPresentation, auxiliaryWindowBounds } from './windowLife
 import { parseKjtPathFromArgv } from './fileAssociation.mjs';
 import { listDiagnostics, onDiagnostic, recordDiagnostic } from './diagnosticsLog.mjs';
 import { inspectPackageArchive, installPackageArchive, listInstalledPackages, loadNamespaceRegistry, packageKey, uninstallPackage } from './packageArchive.mjs';
-import { fetchRemoteRegistry, installFromRegistryEntry } from './registryClient.mjs';
+import { fetchLatestReleaseVersion, fetchRemoteRegistry, installFromRegistryEntry, isNewerVersion } from './registryClient.mjs';
 import { inspectFmuArchive, installFmuArchive, listInstalledFmus, uninstallFmu } from './fmuPackage.mjs';
 import { createExtensionStateStore } from './extensionStateStore.mjs';
 import { exampleCatalogEntry, exampleIdFromFileName, exampleLabel } from './exampleCatalog.mjs';
@@ -156,10 +156,19 @@ let extensionStateStore = null;
 let packageRestartPending = false;
 function markPackageRestartPending() {
     packageRestartPending = true;
+    // Whatever's on disk just changed, so a cached update check (see packageCheckUpdates below) may
+    // now be reporting a package as outdated that was just updated, or missing one just installed.
+    packageUpdatesCache = null;
     for (const window of projectWindows) {
         if (!window.isDestroyed()) window.webContents.send('packageRestartPendingChanged', true);
     }
 }
+// { checkedAt, promise } for the last packageCheckUpdates run, shared by every window -- each
+// window's renderer checks once on startup to badge its Extensions button, and without this a
+// handful of open windows would each spend their own round of GitHub API calls (unauthenticated:
+// 60/hour/IP) on an identical answer. Cleared by markPackageRestartPending above.
+let packageUpdatesCache = null;
+const packageUpdatesCacheTtlMs = 60 * 60 * 1000;
 let applicationShutdownPromise = null;
 let applicationShutdownComplete = false;
 
@@ -1413,6 +1422,48 @@ ipcMain.handle('welcomeInstallRecommendedAddons', async (_event, entries) => {
     await discoverComponentLibrary();
     markPackageRestartPending();
     return results;
+});
+
+// One GitHub Releases API call per installed entry that has a matching registry entry -- not a
+// download, so this is cheap enough to run every time the Extensions dialog opens (see
+// docs/addonExplorer.md's Update checking note). Only entries that are actually installed are
+// checked, keeping the request count proportional to what's on disk, not the whole registry.
+async function checkPackageUpdates() {
+    let registry;
+    try {
+        registry = (await discoverableRegistry()).registry;
+    } catch {
+        return [];
+    }
+    const installed = await listInstalledPackages(join(app.getPath('userData'), 'packages'));
+    const updates = [];
+    for (const [prefix, entry] of Object.entries(registry.prefixes ?? {})) {
+        if (!entry.downloadUrl || !Array.isArray(entry.packages)) continue;
+        const installedMatches = entry.packages
+            .map((declared) => installed.find((pkg) => pkg.packageId === declared.packageId))
+            .filter(Boolean);
+        if (!installedMatches.length) continue;
+        const latest = await fetchLatestReleaseVersion(entry.downloadUrl);
+        if (!latest) continue;
+        const outdated = installedMatches.filter((pkg) => isNewerVersion(latest.version, pkg.version));
+        if (outdated.length) {
+            updates.push({
+                prefix, latestVersion: latest.version, releaseUrl: latest.url,
+                outdated: outdated.map((pkg) => ({ packageId: pkg.packageId, installedVersion: pkg.version }))
+            });
+        }
+    }
+    return updates;
+}
+
+ipcMain.handle('packageCheckUpdates', async (_event, { force = false } = {}) => {
+    const fresh = packageUpdatesCache && Date.now() - packageUpdatesCache.checkedAt < packageUpdatesCacheTtlMs;
+    if (fresh && !force) return packageUpdatesCache.promise;
+    const promise = checkPackageUpdates();
+    packageUpdatesCache = { checkedAt: Date.now(), promise };
+    // A failed check shouldn't be cached for an hour -- let the next caller retry.
+    promise.catch(() => { if (packageUpdatesCache?.promise === promise) packageUpdatesCache = null; });
+    return promise;
 });
 
 ipcMain.handle('projectUnlock', async (_event, { path, password }) => {

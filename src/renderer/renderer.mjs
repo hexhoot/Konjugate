@@ -127,6 +127,13 @@ function renderRestartPending(pending) {
 }
 window.extensions?.restartPending().then(renderRestartPending);
 window.extensions?.onRestartPendingChange(renderRestartPending);
+// Badge the Extensions button with available updates without waiting for the dialog to be opened
+// (see ensurePackageUpdates/renderPackageUpdatesBadge below). Deferred past startup so it never
+// competes with the window's own first load, and cached main-process side so extra windows don't
+// repeat the GitHub calls. Advisory only -- a failure just leaves the badge hidden.
+setTimeout(() => {
+    if (window.extensions?.checkUpdates) ensurePackageUpdates().catch(() => {});
+}, 5000);
 $('#extensionsRestartNow').addEventListener('click', () => window.applicationInfo.restart());
 const defaultWorkerThreads = Math.max(1, Math.min(256, Number(navigator.hardwareConcurrency) || 1));
 let nextModelEntityId = 1;
@@ -9136,6 +9143,10 @@ let discoverEntries = [];
 let discoverStale = false;
 let discoverDomain = 'all';
 let discoverSelectedPrefix = null;
+// prefix -> { latestVersion, releaseUrl, outdated: [{packageId, installedVersion}] } (see
+// docs/addonExplorer.md's Update checking note). Populated in the background on dialog open, same
+// as discoverEntries above -- a failure here just means no update information this session.
+let packageUpdates = new Map();
 
 function extensionsPackageKey(entry) {
     return `${entry.packageType}:${entry.packageId}:${entry.version}`;
@@ -9158,7 +9169,8 @@ function renderExtensionsResults() {
         button.dataset.packageKey = extensionsPackageKey(entry);
         button.classList.toggle('selected', extensionsPackageKey(entry) === extensionsSelectedKey);
         button.classList.toggle('disabledItem', !entry.enabled);
-        const meta = `${escapeHtml(entry.version)} · ${entry.source === 'bundled' ? 'Bundled' : 'Installed'}${entry.enabled ? '' : ' · Disabled'}`;
+        const update = updateInfoFor(entry.packageId);
+        const meta = `${escapeHtml(entry.version)} · ${entry.source === 'bundled' ? 'Bundled' : 'Installed'}${entry.enabled ? '' : ' · Disabled'}${update ? ` · Update to ${escapeHtml(update.latestVersion)} available` : ''}`;
         const description = registryDescriptionFor(entry.packageId);
         button.innerHTML = `<b>${escapeHtml(entry.name)}</b>`
             + (description ? `<p class="extensionsItemDescription">${escapeHtml(description)}</p>` : '')
@@ -9193,6 +9205,15 @@ function renderExtensionsDetail() {
         const siblingIds = bundleEntry.packages.filter((declared) => declared.packageId !== entry.packageId).map((declared) => declared.packageId).join(', ');
         $('#extensionsDetailBundleNote').textContent = `Part of the ${bundleEntry.title || bundleEntry.prefix} bundle, along with ${siblingIds}.`;
     }
+    const update = updateInfoFor(entry.packageId);
+    $('#extensionsDetailUpdateNote').hidden = !update;
+    $('#extensionsUpdate').hidden = !update;
+    // Reset here rather than only in the click handler's error path -- after a successful update
+    // this button is hidden with its "Updating…"/disabled state still set, and would otherwise
+    // reappear that way for the next outdated package selected.
+    $('#extensionsUpdate').disabled = false;
+    $('#extensionsUpdate').textContent = 'Update';
+    if (update) $('#extensionsDetailUpdateNote').textContent = `Version ${update.latestVersion} is available (currently ${update.installedVersion}).`;
     $('#extensionsToggleEnabled').textContent = entry.enabled ? 'Disable' : 'Enable';
     $('#extensionsUninstall').hidden = entry.source === 'bundled';
 }
@@ -9218,6 +9239,36 @@ function registryBundleFor(packageId) {
 // display this already had.
 function registryDescriptionFor(packageId) {
     return discoverEntries.find((entry) => entry.packages.some((declared) => declared.packageId === packageId))?.description ?? null;
+}
+
+// { prefix, latestVersion, releaseUrl, installedVersion } for packageId if packageCheckUpdates
+// found a newer release, else null. Looked up from packageUpdates (populated in the background on
+// dialog open) rather than computed here -- the actual GitHub Releases check happens main-process
+// side, once per registry-known installed entry, not per render.
+function updateInfoFor(packageId) {
+    for (const [prefix, update] of packageUpdates) {
+        const outdated = update.outdated.find((item) => item.packageId === packageId);
+        if (outdated) return { prefix, latestVersion: update.latestVersion, releaseUrl: update.releaseUrl, installedVersion: outdated.installedVersion };
+    }
+    return null;
+}
+
+async function ensurePackageUpdates({ force = false } = {}) {
+    packageUpdates = new Map((await window.extensions.checkUpdates({ force })).map((update) => [update.prefix, update]));
+    renderPackageUpdatesBadge();
+}
+
+// The Explorer entry point's badge (see docs/addonExplorer.md's Update checking note): one count
+// per outdated installed package, not per registry entry, so a two-package bundle counts as two --
+// matching how many rows show "Update available" in Installed mode.
+function renderPackageUpdatesBadge() {
+    const count = [...packageUpdates.values()].reduce((total, update) => total + update.outdated.length, 0);
+    const badge = $('#extensionsUpdateBadge');
+    badge.hidden = count === 0;
+    badge.textContent = String(count);
+    const label = count ? `Manage extensions (${count} update${count === 1 ? '' : 's'} available)` : 'Manage extensions';
+    $('#extensionsButton').setAttribute('aria-label', label);
+    $('#extensionsButton').dataset.tooltip = count ? `Extensions · ${count} update${count === 1 ? '' : 's'} available` : 'Extensions';
 }
 
 // A human-readable warning if uninstalling/disabling entry would leave an installed bundle sibling
@@ -9366,11 +9417,11 @@ function renderDiscoverDetail() {
     } else if (partialInstalled) {
         statusNote.hidden = false;
         statusNote.textContent = `Partially installed (${installedCount} of ${entry.packages.length} packages on disk).`;
-        installBtn.textContent = 'Install';
+        installBtn.textContent = 'Trust publisher and install';
         installBtn.disabled = false;
     } else {
         statusNote.hidden = true;
-        installBtn.textContent = 'Install';
+        installBtn.textContent = 'Trust publisher and install';
         installBtn.disabled = false;
     }
 }
@@ -9438,6 +9489,15 @@ async function openExtensionsDialog() {
     // means no registry-sourced info this session -- advisory only, per the design principles in
     // docs/addonExplorer.md.
     ensureDiscoverRegistry().then(() => {
+        if (extensionsMode === 'installed') {
+            renderExtensionsResults();
+            renderExtensionsDetail();
+        }
+    }).catch(() => {});
+    // A separate background fetch from the one above -- this is its own round of GitHub Releases
+    // API calls (one per installed, registry-known entry), not just the one registry listing fetch,
+    // so it's kept independent rather than chained after it.
+    ensurePackageUpdates().then(() => {
         if (extensionsMode === 'installed') {
             renderExtensionsResults();
             renderExtensionsDetail();
@@ -9533,6 +9593,51 @@ $('#extensionsDiscoverDetailContent').addEventListener('click', (event) => {
     }
 });
 
+$('#extensionsUpdate').addEventListener('click', async () => {
+    const entry = extensionsEntries.find((candidate) => extensionsPackageKey(candidate) === extensionsSelectedKey);
+    const update = entry && updateInfoFor(entry.packageId);
+    if (!update) return;
+    const button = $('#extensionsUpdate');
+    button.disabled = true;
+    button.textContent = 'Updating…';
+    try {
+        // The update check and the registry fetch run independently on dialog open, so the check can
+        // finish (showing this button) before discoverEntries has loaded -- wait for it rather than
+        // silently doing nothing.
+        await ensureDiscoverRegistry();
+        const registryEntry = discoverEntries.find((candidate) => candidate.prefix === update.prefix);
+        if (!registryEntry) throw new Error(`${update.prefix} is no longer listed in the registry.`);
+        // The whole entry, not just entry.packageId -- a bundle updates in lockstep (see the
+        // Multi-package bundles section of docs/addonExplorer.md), so updating one half means
+        // reinstalling the other too, exactly like a fresh Discover install of the same entry.
+        const results = await window.extensions.installFromRegistry(registryEntry, discoverRegistry);
+        // Keep the same package selected at its new version, rather than letting the old version's
+        // key (no longer on disk if the install replaced it) drop the detail pane back to empty.
+        const updated = results.find((result) => result.packageId === entry.packageId);
+        if (updated) extensionsSelectedKey = `${updated.packageType}:${updated.packageId}:${updated.version}`;
+        await refreshExtensionsList();
+        await ensurePackageUpdates().catch(() => {});
+        renderExtensionsResults();
+        renderExtensionsDetail();
+        // The update check reads the release's *tag*, but what gets installed is whatever version the
+        // package inside that release declares -- if the publisher bumped the tag without rebuilding
+        // the package at the new version, this "update" just reinstalled the same version, and the
+        // check will keep offering it. Say so plainly instead of claiming an update happened.
+        const stale = results.filter((result) => result.version !== update.latestVersion);
+        if (stale.length) {
+            const found = stale.map((result) => `${result.packageId} ${result.version}`).join(', ');
+            showExtensionsNotice(`The latest release is tagged ${update.latestVersion}, but the package inside it is still ${found} -- nothing was actually updated. The publisher needs to rebuild that release with the package version bumped to match its tag.`, 'warning');
+            return;
+        }
+        const summary = results.map((result) => `${result.packageId} ${result.version}`).join(', ');
+        showExtensionsNotice(`Updated ${summary}. Restart Konjugate to activate it.`);
+    } catch (error) {
+        button.disabled = false;
+        button.textContent = 'Update';
+        showExtensionsNotice(`Update failed: ${error.message}`, 'error');
+    }
+});
+
 $('#extensionsToggleEnabled').addEventListener('click', async () => {
     const entry = extensionsEntries.find((candidate) => extensionsPackageKey(candidate) === extensionsSelectedKey);
     if (!entry) return;
@@ -9565,6 +9670,9 @@ $('#extensionsUninstall').addEventListener('click', async () => {
         await window.extensions.uninstall(entry.packageType, entry.packageId, entry.version);
         extensionsSelectedKey = null;
         await refreshExtensionsList();
+        // Drop an uninstalled package from the update badge/count right away (the main-process cache
+        // was already cleared by the uninstall itself).
+        if (updateInfoFor(entry.packageId)) ensurePackageUpdates().then(() => { renderExtensionsResults(); renderExtensionsDetail(); }).catch(() => {});
         showExtensionsNotice(entry.packageType === 'fmu'
             ? `Uninstalled ${entry.packageId} ${entry.version}. Any node still referencing it will fail to run until it is reinstalled or the reference is removed.`
             : `Uninstalled ${entry.packageId} ${entry.version}. Restart Konjugate if it was active.`);

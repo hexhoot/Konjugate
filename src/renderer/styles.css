@@ -331,6 +331,7 @@ input, select, textarea { user-select: text; }
 .windowControls .titleAssistantControl:disabled { color: #344751; cursor: default; }
 #diagnosticsButton { color: #5c7079; font-size: 12px; }
 #extensionsButton { position: relative; }
+#extensionsButton .extensionsUpdateBadge { right: auto; left: 4px; color: #06201d; background: #82cfc8; }
 .diagnosticsBadge {
     position: absolute; top: 6px; right: 4px; min-width: 13px; height: 13px; padding: 0 3px;
     color: #1a0d0f; background: #e0929a; border-radius: 7px; font-size: 7px; font-weight: 750;

@@ -166,7 +166,12 @@ export function inspectPackageArchive(archive, { extension = null } = {}) {
     return { packageManifest, contributionManifest, files };
 }
 
-export async function installPackageArchive(archive, { extension, directory, overwrite = false } = {}) {
+// replaceOtherVersions: remove every other installed version of the same package once this one is
+// in place. Install paths are per-version (<type>s/<packageId>/<version>), so without this an
+// update leaves the old version on disk next to the new one -- both then get discovered and loaded,
+// and the update check keeps reporting the old one as outdated. Only removed after the new version
+// has been written successfully, so a failed install never leaves the package missing entirely.
+export async function installPackageArchive(archive, { extension, directory, overwrite = false, replaceOtherVersions = false } = {}) {
     if (!directory) throw new PackageArchiveError('A package installation directory is required.', 'INVALID_DESTINATION');
     const inspected = inspectPackageArchive(archive, { extension });
     const { packageManifest, files } = inspected;
@@ -197,6 +202,14 @@ export async function installPackageArchive(archive, { extension, directory, ove
         await rm(temporary, { recursive: true, force: true });
         if (error instanceof PackageArchiveError) throw error;
         throw new PackageArchiveError(`The package could not be installed: ${error.message}`, 'INSTALL_FAILED');
+    }
+    if (replaceOtherVersions) {
+        const packageRoot = dirname(target);
+        const siblings = await readdir(packageRoot, { withFileTypes: true }).catch(() => []);
+        for (const sibling of siblings) {
+            if (!sibling.isDirectory() || sibling.name === basename(target) || sibling.name.endsWith('.tmp')) continue;
+            await rm(join(packageRoot, sibling.name), { recursive: true, force: true });
+        }
     }
     return { ...inspected, installPath: target };
 }

@@ -120,11 +120,63 @@ export async function installFromRegistryEntry(entry, { namespaces, directory, o
         if (!match) throw new RegistryClientError(`The download does not contain the declared package "${declared.packageId}".`, 'PACKAGE_MISSING');
         const [, bytes] = match;
         const verification = verifyPackageArchive(bytes, { namespaces });
-        const installed = await installPackageArchive(bytes, { extension, directory, overwrite });
+        // A registry install is always "this is the version to have" -- installing a newer release of
+        // something already installed is exactly how Update works -- so older versions are replaced
+        // rather than left installed alongside it.
+        const installed = await installPackageArchive(bytes, { extension, directory, overwrite, replaceOtherVersions: true });
         results.push({
             packageType: installed.packageManifest.packageType, packageId: installed.packageManifest.packageId,
             version: installed.packageManifest.version, verification
         });
     }
     return results;
+}
+
+// ---- Update checking (see the Recommended add-ons/Update checking notes in docs/addonExplorer.md)
+//
+// A registry entry deliberately carries no version number of its own (see docs/registry.md -- it
+// would just be a second, staler copy of what the actual release already declares), so "is there an
+// update" can't be answered by reading the registry alone. Instead: GitHub's own Releases API gives
+// the latest release's tag directly, for whatever repo a downloadUrl of the expected
+// releases/latest/download/... shape points at -- cheap (one API call per installed entry, not a
+// download) and always exactly as current as the release the registry's downloadUrl would actually
+// resolve to.
+
+function githubRepoFromDownloadUrl(downloadUrl) {
+    const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/releases\//.exec(downloadUrl ?? '');
+    return match ? { owner: match[1], repo: match[2] } : null;
+}
+
+// true if `latest` is a newer dotted-numeric version than `current` (e.g. "0.2.0" > "0.1.0") --
+// every package.json/addon.json/plugin.json version seen in this ecosystem follows this simple
+// scheme, so a minimal per-segment numeric compare is enough; no need for a full semver library
+// (pre-release tags, build metadata) nothing here actually uses.
+export function isNewerVersion(latest, current) {
+    const a = String(latest).split('.').map(Number);
+    const b = String(current).split('.').map(Number);
+    for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+        const diff = (a[index] || 0) - (b[index] || 0);
+        if (diff !== 0) return diff > 0;
+    }
+    return false;
+}
+
+// Returns { version, url } for the latest GitHub release of the repo entry.downloadUrl points at,
+// or null for anything that isn't a recognizable GitHub releases download URL, has no releases yet,
+// or couldn't be reached -- advisory only, same as the rest of this module, so a failure here just
+// means "no update information," never an error that should interrupt Discover/Installed.
+export async function fetchLatestReleaseVersion(downloadUrl, { fetchImpl = fetch } = {}) {
+    const repo = githubRepoFromDownloadUrl(downloadUrl);
+    if (!repo) return null;
+    try {
+        const response = await fetchImpl(`https://api.github.com/repos/${repo.owner}/${repo.repo}/releases/latest`, {
+            headers: { Accept: 'application/vnd.github+json' }
+        });
+        if (!response.ok) return null;
+        const release = await response.json();
+        if (typeof release.tag_name !== 'string') return null;
+        return { version: release.tag_name.replace(/^v/, ''), url: release.html_url };
+    } catch {
+        return null;
+    }
 }

@@ -64,6 +64,10 @@
                 <button id="extensionsButton" type="button" aria-label="Manage extensions" aria-haspopup="dialog" data-tooltip="Extensions">
         <img class="documentActionIcon" src="../../assets/extensions.svg" alt="">
         <span id="extensionsRestartBadge" class="diagnosticsBadge" hidden></span>
+        <!-- Count of installed add-ons/plugins with a newer release (see docs/addonExplorer.md's
+             Update checking note) -- kept separate from #extensionsRestartBadge above, which is a
+             different state that can be showing at the same time. -->
+        <span id="extensionsUpdateBadge" class="diagnosticsBadge extensionsUpdateBadge" hidden></span>
     </button>
                 <button id="exampleGuideButton" class="exampleGuideButton" type="button" aria-label="About this example" data-tooltip="About this example" hidden>?</button>
             </div>
@@ -283,7 +287,12 @@
                              has been fetched, so it's empty/hidden for anyone offline or without a
                              matching bundle. -->
                         <p id="extensionsDetailBundleNote" class="examplesExplorerDetailEmpty" hidden></p>
+                        <!-- Populated by packageCheckUpdates (see docs/addonExplorer.md's Update
+                             checking note) -- a GitHub Releases API check against this package's own
+                             registry entry, not a version number stored in the registry itself. -->
+                        <p id="extensionsDetailUpdateNote" class="examplesExplorerDetailEmpty" hidden></p>
                         <footer class="extensionsDetailFooter">
+                            <button id="extensionsUpdate" type="button" class="doneButton" hidden>Update</button>
                             <button id="extensionsToggleEnabled" type="button" class="extensionsToggleButton">Disable</button>
                             <button id="extensionsUninstall" type="button" class="extensionsDangerButton">Uninstall</button>
                         </footer>
@@ -315,7 +324,7 @@
                         <ul id="extensionsDiscoverDetailPackages" class="extensionsPermissionList"></ul>
                         <p id="extensionsDiscoverDetailStatus" class="examplesExplorerDetailEmpty" hidden></p>
                         <footer class="extensionsDetailFooter">
-                            <button id="extensionsDiscoverInstall" type="button" class="doneButton">Install</button>
+                            <button id="extensionsDiscoverInstall" type="button" class="doneButton">Trust publisher and install</button>
                         </footer>
                     </div>
                 </div>

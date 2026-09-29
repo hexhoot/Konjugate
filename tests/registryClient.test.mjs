@@ -6,15 +6,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { strToU8, zipSync } from 'fflate';
-import { createPackageArchive, PackageArchiveError } from '../src/packageArchive.mjs';
-import { fetchRemoteRegistry, installFromRegistryEntry, RegistryClientError } from '../src/registryClient.mjs';
+import { createPackageArchive, listInstalledPackages, PackageArchiveError } from '../src/packageArchive.mjs';
+import { fetchLatestReleaseVersion, fetchRemoteRegistry, installFromRegistryEntry, isNewerVersion, RegistryClientError } from '../src/registryClient.mjs';
 
 // A minimal but real .kja, built the same way tests/packageArchive.test.mjs does.
-function addonArchive(packageId = 'example.fintech.toolbox') {
+function addonArchive(packageId = 'example.fintech.toolbox', version = '0.1.0') {
     return createPackageArchive({
-        packageManifest: { format: 'konjugate-package', formatVersion: 1, packageType: 'addon', packageId, name: 'Example', version: '0.1.0', contents: { manifest: 'addon.json' } },
+        packageManifest: { format: 'konjugate-package', formatVersion: 1, packageType: 'addon', packageId, name: 'Example', version, contents: { manifest: 'addon.json' } },
         contributionManifest: {
-            addonId: packageId, name: 'Example', version: '0.1.0', apiVersion: 1, kind: 'resultVisualizer', entry: 'index.html', permissions: ['results.read'],
+            addonId: packageId, name: 'Example', version, apiVersion: 1, kind: 'resultVisualizer', entry: 'index.html', permissions: ['results.read'],
             contributes: { toolstrip: [{ commandId: 'open', label: 'Open', tooltip: 'Open', symbol: 'E', when: 'resultsActive', contexts: ['resultSession'] }] }
         },
         files: { 'index.html': '<!doctype html>' }
@@ -216,6 +216,49 @@ test('installFromRegistryEntry cleanly reinstalls or updates an already installe
         const results = await installFromRegistryEntry(entry, { fetchImpl, directory, namespaces: { prefixes: {} } });
         assert.equal(results.length, 1);
         assert.equal(results[0].packageId, 'example.fintech.toolbox');
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('isNewerVersion compares dotted-numeric versions segment by segment', () => {
+    assert.equal(isNewerVersion('0.2.0', '0.1.0'), true);
+    assert.equal(isNewerVersion('0.1.0', '0.1.0'), false);
+    assert.equal(isNewerVersion('0.1.0', '0.2.0'), false);
+    assert.equal(isNewerVersion('1.0.0', '0.9.9'), true);
+    assert.equal(isNewerVersion('0.1.10', '0.1.9'), true, 'compares numerically, not lexically');
+    assert.equal(isNewerVersion('0.1', '0.1.0'), false, 'a missing trailing segment counts as 0');
+});
+
+test('fetchLatestReleaseVersion reads the latest release tag for a GitHub releases download URL', async () => {
+    const releasesUrl = 'https://api.github.com/repos/zenineasa/Konjugate-Fintech/releases/latest';
+    const fetchImpl = fakeFetch({
+        [releasesUrl]: jsonResponse({ tag_name: 'v0.2.0', html_url: 'https://github.com/zenineasa/Konjugate-Fintech/releases/tag/v0.2.0' })
+    });
+    const result = await fetchLatestReleaseVersion('https://github.com/zenineasa/Konjugate-Fintech/releases/latest/download/konjugate-fintech-toolbox.zip', { fetchImpl });
+    assert.deepEqual(result, { version: '0.2.0', url: 'https://github.com/zenineasa/Konjugate-Fintech/releases/tag/v0.2.0' });
+});
+
+test('fetchLatestReleaseVersion returns null rather than throwing for anything not checkable', async () => {
+    assert.equal(await fetchLatestReleaseVersion('https://example.org/not-github.zip'), null);
+    assert.equal(await fetchLatestReleaseVersion(undefined), null);
+    const notFound = fakeFetch({
+        'https://api.github.com/repos/zenineasa/Konjugate-HelloWorld/releases/latest': jsonResponse(null, { ok: false, status: 404 })
+    });
+    assert.equal(await fetchLatestReleaseVersion('https://github.com/zenineasa/Konjugate-HelloWorld/releases/latest/download/konjugate.helloWorld.kja', { fetchImpl: notFound }), null);
+    const throwing = async () => { throw new Error('network down'); };
+    assert.equal(await fetchLatestReleaseVersion('https://github.com/zenineasa/Konjugate-HelloWorld/releases/latest/download/konjugate.helloWorld.kja', { fetchImpl: throwing }), null);
+});
+
+test('installFromRegistryEntry replaces an older installed version rather than installing alongside it', async () => {
+    const entry = { downloadUrl: 'https://example.org/direct.kja', packages: [{ packageType: 'addon', packageId: 'example.fintech.toolbox' }] };
+    const directory = await mkdtemp(join(tmpdir(), 'konjugate-registryclient-'));
+    try {
+        await installFromRegistryEntry(entry, { fetchImpl: fakeFetch({ 'https://example.org/direct.kja': bytesResponse(addonArchive('example.fintech.toolbox', '0.1.0')) }), directory, namespaces: { prefixes: {} } });
+        const results = await installFromRegistryEntry(entry, { fetchImpl: fakeFetch({ 'https://example.org/direct.kja': bytesResponse(addonArchive('example.fintech.toolbox', '0.2.0')) }), directory, namespaces: { prefixes: {} } });
+        assert.equal(results[0].version, '0.2.0');
+        const installed = await listInstalledPackages(directory);
+        assert.deepEqual(installed.map((pkg) => `${pkg.packageId}@${pkg.version}`), ['example.fintech.toolbox@0.2.0']);
     } finally {
         await rm(directory, { recursive: true, force: true });
     }

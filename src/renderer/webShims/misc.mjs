@@ -87,7 +87,13 @@ export const extensions = {
     list: async () => [],
     install: async () => ({ available: false }),
     uninstall: async () => ({ available: false }),
-    setEnabled: async () => ({ available: false })
+    setEnabled: async () => ({ available: false }),
+    // Called unconditionally at renderer startup (restart-pending badge, update-count badge), so
+    // they need no-op stand-ins here -- nothing is ever installed in the web edition to restart for
+    // or update.
+    restartPending: async () => false,
+    onRestartPendingChange: () => {},
+    checkUpdates: async () => []
 };
 
 // providerEditor lives in its own file (providerEditor.mjs) -- it needs a real <dialog>, unlike
