@@ -127,6 +127,27 @@ void evaluationSeparatesLocalSnapshotAndLiveParameterInputs() {
         "Evaluation did not respect local state, synchronization snapshot and live parameter boundaries.");
 }
 
+// A time binding reads the substep's start time in a differential contribution and its end time
+// in an algebraic one.
+void timeBindingReadsSubstepStartForDerivativesAndEndForAlgebraicStates() {
+    konjugate::NodeExecutionPlan node;
+    node.nodeId = 1;
+    konjugate::ContributionTask differential;
+    differential.outputStateId = 5;
+    differential.outputStateIndex = 0;
+    differential.bindings = {{"t", konjugate::BindingSource::simulationTime, 0}};
+    differential.expression = symbol("t", 0);
+    node.contributions.push_back(differential);
+    const auto evaluated = konjugate::evaluateContributionTasks(
+        node, {0}, {0}, konjugate::resolveParameterValues(node, {}), 3.0, 0.5);
+    require(evaluated.size() == 1 && evaluated.front().value == 3.0, "A differential time binding must read the substep start time.");
+
+    std::vector<konjugate::ContributionTask> algebraicTasks = {differential};
+    konjugate::StateValues local = {0};
+    konjugate::applyAlgebraicTasks(algebraicTasks, local, konjugate::resolveParameterValues(algebraicTasks, {}), 3.0, 0.5, nullptr);
+    require(local[0] == 3.5, "An algebraic time binding must read the substep end time.");
+}
+
 void parameterScheduleEvaluatesEachModeAndSupersedesEarlierSchedules() {
     using konjugate::ParameterSchedule;
     using konjugate::evaluateParameterSchedule;
@@ -591,6 +612,7 @@ int main() {
         deterministicReductionUsesTaskSequence();
         conditionalExpressionsPickTheFirstMatchingBranch();
         evaluationSeparatesLocalSnapshotAndLiveParameterInputs();
+        timeBindingReadsSubstepStartForDerivativesAndEndForAlgebraicStates();
         parameterScheduleEvaluatesEachModeAndSupersedesEarlierSchedules();
         applyAlgebraicTasksSnapsMismatchedStateToTargetImmediately();
         applyAlgebraicTasksResolveDependencyOrderWithinOnePass();

@@ -13,8 +13,19 @@ test('creates stable-ID-backed state and parameter bindings', () => {
     assert.deepEqual(bindings.map(({ symbol, kind }) => ({ symbol, kind })), [
         { symbol: 'sourceTemperature', kind: 'state' },
         { symbol: 'targetTemperature', kind: 'state' },
-        { symbol: 'conductance', kind: 'parameter' }
+        { symbol: 'conductance', kind: 'parameter' },
+        { symbol: 't', kind: 'time' }
     ]);
+});
+
+test('the time binding keeps its symbol and steps aside for a parameter named t', () => {
+    const renamed = reconcileEquationBindings([], source, target, [{ id: 6, symbol: 't' }]);
+    assert.deepEqual(renamed.filter((binding) => binding.kind === 'time').map((binding) => binding.symbol), ['t2']);
+    const kept = reconcileEquationBindings(renamed, source, target, [{ id: 6, symbol: 't' }]);
+    assert.equal(kept.find((binding) => binding.kind === 'time').symbol, 't2');
+    const bindings = reconcileEquationBindings([], source, target, [parameter]);
+    const validation = validateEquationLatex(String.raw`\begin{cases} \mathrm{conductance} & 10 \le t < 20 \\ 0 & \text{otherwise} \end{cases}`, bindings);
+    assert.equal(validation.valid, true, validation.errors.join(' '));
 });
 
 test('preserves equation symbols when a state is renamed', () => {

@@ -104,6 +104,8 @@ std::vector<CompiledBinding> compileBindings(const boost::property_tree::ptree& 
         if (value(binding, "kind") == "parameter") {
             compiled.source = BindingSource::parameter;
             compiled.valueId = idValue(binding, "parameterId");
+        } else if (value(binding, "kind") == "time") {
+            compiled.source = BindingSource::simulationTime;
         } else {
             compiled.valueId = idValue(binding, "stateId");
             compiled.source = sourceTerm || idValue(binding, "nodeId") == outputNodeId
@@ -543,6 +545,7 @@ std::vector<EvaluatedContribution> evaluateContributionTasks(
             if (binding.source == BindingSource::parameter) {
                 symbols[index] = parameterValues.at(taskIndex).at(binding.parameterIndex);
             } else if (binding.source == BindingSource::localState) symbols[index] = localStates.at(binding.valueIndex);
+            else if (binding.source == BindingSource::simulationTime) symbols[index] = simulationTime;
             else symbols[index] = synchronizationSnapshot.at(binding.valueIndex);
         }
 
@@ -724,6 +727,10 @@ void applyAlgebraicTasks(const std::vector<ContributionTask>& algebraicTasks, St
                 symbols[index] = parameterValues.at(taskIndex).at(binding.parameterIndex);
             } else if (binding.source == BindingSource::localState) {
                 symbols[index] = localStates.at(binding.valueIndex);
+            } else if (binding.source == BindingSource::simulationTime) {
+                // End of the substep: an algebraic value is the state's value once the substep
+                // completes (same convention as programmable algebraic terms below).
+                symbols[index] = simulationTime + stepSize;
             } else {
                 // Structurally unreachable: compileBindings() forces every source term's
                 // bindings to BindingSource::localState unconditionally (an algebraic task is

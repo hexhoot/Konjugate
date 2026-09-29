@@ -11,6 +11,7 @@ import { DocumentController } from './documentController.mjs';
 import {
     latexForBinding,
     reconcileEquationBindings,
+    timeBinding,
     validateEquationLatex
 } from '../equationModel.mjs';
 import { validateProjectPassword } from './passwordValidation.mjs';
@@ -1836,12 +1837,14 @@ function sourceTermBindingCandidates(definition) {
 }
 
 function sourceTermExpressionBindingCandidates(definition, term) {
-    return [
+    const bindings = [
         ...sourceTermBindingCandidates(definition),
         ...(term.parameters ?? []).map((parameter) => ({
             kind: 'parameter', parameterId: parameter.id, symbol: parameter.symbol, label: parameter.symbol
         }))
     ];
+    const previousTime = term.expressionModel?.bindings?.find((binding) => binding.kind === 'time');
+    return [...bindings, timeBinding(new Set(bindings.map((binding) => binding.symbol)), previousTime?.symbol)];
 }
 
 function normalizeSourceTermExpressionModel(definition, term, expressionModel = term.expressionModel) {
@@ -2063,7 +2066,7 @@ function renderSourceTermEditor(node, term) {
             const button = document.createElement('button');
             button.type = 'button';
             button.textContent = binding.label;
-            button.title = 'Insert state reference';
+            button.title = bindingInsertTitle(binding);
             button.addEventListener('click', () => insertSourceTermBinding(binding));
             references.appendChild(button);
         });
@@ -2574,7 +2577,7 @@ function renderEdgeEditor(definition) {
             const button = document.createElement('button');
             button.type = 'button';
             button.textContent = binding.label;
-            button.title = binding.kind === 'parameter' ? 'Insert parameter' : 'Insert state reference';
+            button.title = bindingInsertTitle(binding);
             button.addEventListener('click', () => insertEquationBinding(binding));
             references.appendChild(button);
         });
@@ -2589,10 +2592,16 @@ function renderEdgeEditor(definition) {
     }
 }
 
+function bindingInsertTitle(binding) {
+    if (binding.kind === 'time') return 'Insert simulation time (seconds)';
+    return binding.kind === 'parameter' ? 'Insert parameter' : 'Insert state reference';
+}
+
+// Providers get simulation time from their evaluation context, so time is not a bindable input.
 function providerReferenceCandidates(definition) {
     const sourceNode = model.nodes.find((node) => node.id === definition.source);
     const targetNode = model.nodes.find((node) => node.id === definition.target);
-    return reconcileEquationBindings([], sourceNode, targetNode, definition.parameters);
+    return reconcileEquationBindings([], sourceNode, targetNode, definition.parameters).filter((binding) => binding.kind !== 'time');
 }
 
 function providerReferenceValue(reference) {
@@ -3790,6 +3799,7 @@ function refreshStateReferences() {
         const button = document.createElement('button');
         button.type = 'button';
         button.textContent = binding.label;
+        button.title = bindingInsertTitle(binding);
         button.addEventListener('click', () => insertBuilderEquationBinding(binding));
         container.appendChild(button);
     });
@@ -3829,7 +3839,7 @@ function addProviderBindingRow(values = {}) {
         id: `builderParameter${index}`,
         symbol: $('[data-field="symbol"]', parameterRow).value.trim()
     })).filter((parameter) => modelSymbolPattern.test(parameter.symbol));
-    const candidates = reconcileEquationBindings([], sourceNode, targetNode, parameters);
+    const candidates = reconcileEquationBindings([], sourceNode, targetNode, parameters).filter((binding) => binding.kind !== 'time');
     refreshProviderBindingRowOptions(candidates);
     if (values.referenceValue) $('[data-field="reference"]', row).value = values.referenceValue;
     row.querySelector('.removeBuilderRow').addEventListener('click', () => row.remove());

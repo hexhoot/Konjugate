@@ -64,7 +64,9 @@ struct CompiledExpression {
     std::size_t operationCount() const noexcept;
 };
 
-enum class BindingSource { localState, synchronizationSnapshot, parameter };
+// simulationTime: an equation's time binding ({ kind: "time" }) -- the substep's start time for a
+// differential contribution, its end time for an algebraic (setsValue) one.
+enum class BindingSource { localState, synchronizationSnapshot, parameter, simulationTime };
 enum class ContributionImplementation { equation, cppProvider, pythonProvider };
 
 struct CompiledBinding {

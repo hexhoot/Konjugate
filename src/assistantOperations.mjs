@@ -1,6 +1,6 @@
 /* Copyright © 2026 Zenin Easa Panthakkalakath */
 
-import { reconcileEquationBindings, validateEquationLatex } from './equationModel.mjs';
+import { reconcileEquationBindings, timeBinding, validateEquationLatex } from './equationModel.mjs';
 
 export const assistantProposalVersion = 1;
 const symbolPattern = /^[a-z][A-Za-z0-9]*$/;
@@ -233,9 +233,10 @@ export function applyAssistantProposal(projectDocument, proposal, options = {}) 
                 };
             } else {
                 const latex = requireText(operation.latex, 'latex', operationIndex);
-                const bindings = node.states.map((state) => ({
+                const stateBindings = node.states.map((state) => ({
                     kind: 'state', nodeId: node.id, stateId: state.id, symbol: state.symbol, label: state.symbol
                 }));
+                const bindings = [...stateBindings, timeBinding(new Set(stateBindings.map((binding) => binding.symbol)))];
                 const validation = validateEquationLatex(latex, bindings);
                 if (!validation.valid) throw new AssistantProposalError(validation.errors.join(' '), operationIndex);
                 term = {

@@ -15,6 +15,7 @@ await run(process.execPath, [join(rootDirectory, 'tests', 'engine', 'edgeDirecti
 await run(process.execPath, [join(rootDirectory, 'tests', 'engine', 'edgeNullStateIdContract.mjs'), executable]);
 await run(process.execPath, [join(rootDirectory, 'tests', 'engine', 'disabledEntityContract.mjs'), executable]);
 await run(process.execPath, [join(rootDirectory, 'tests', 'engine', 'logisticsPortNetwork.mjs'), executable]);
+await run(process.execPath, [join(rootDirectory, 'tests', 'engine', 'timeBindingContract.mjs'), executable]);
 await run(process.execPath, [join(rootDirectory, 'tests', 'engine', 'continuousTimeDrift.mjs'), executable]);
 await run(process.execPath, [join(rootDirectory, 'tests', 'engine', 'causalInferenceCommitAndRun.mjs'), executable]);
 await run(process.execPath, [join(rootDirectory, 'tests', 'engine', 'postRunStabilityDiagnostics.mjs'), executable]);

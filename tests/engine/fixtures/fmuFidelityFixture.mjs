@@ -92,14 +92,17 @@ export const document = {
             numerics: { substepsPerGlobalStep: 2 },
             sourceTerms: [
                 {
-                    id: 103, state: 'driver', expression: '0.5',
-                    expressionModel: { latex: '0.5', bindings: [], output: { stateId: stateIds.driver }, mathJson: '0.5' }
+                    id: 103, state: 'driver', expression: '0.5 + 0.2 t',
+                    expressionModel: {
+                        latex: '0.5 + 0.2 t', bindings: [{ kind: 'time', symbol: 't' }],
+                        output: { stateId: stateIds.driver }, mathJson: ['Add', '0.5', ['Multiply', '0.2', 't']]
+                    }
                 },
                 {
-                    id: 104, state: 'shifted', expression: 'doubled + 1', setsValue: true,
+                    id: 104, state: 'shifted', expression: 'doubled + 1 + t', setsValue: true,
                     expressionModel: {
-                        latex: 'y + 1', bindings: [{ kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.doubled, symbol: 'y' }],
-                        output: { stateId: stateIds.shifted }, mathJson: ['Add', 'y', '1']
+                        latex: 'y + 1 + t', bindings: [{ kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.doubled, symbol: 'y' }, { kind: 'time', symbol: 't' }],
+                        output: { stateId: stateIds.shifted }, mathJson: ['Add', 'y', '1', 't']
                     }
                 },
                 {

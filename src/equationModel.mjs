@@ -24,9 +24,17 @@ function uniqueSymbol(preferred, used) {
 }
 
 function bindingKey(binding) {
+    if (binding.kind === 'time') return 'time';
     return binding.kind === 'parameter'
         ? `parameter:${binding.parameterId}`
         : `state:${binding.role}:${binding.nodeId}:${binding.stateId}`;
+}
+
+// Simulation time, available to every equation as t (renamed only if t is already taken). The
+// engine reads it at the start of the substep, or at the end for an algebraic (setsValue) term.
+export function timeBinding(usedSymbols = new Set(), preferred = 't') {
+    const symbol = uniqueSymbol(preferred, usedSymbols);
+    return { kind: 'time', symbol, label: `${symbol} (time)` };
 }
 
 export function reconcileEquationBindings(existing = [], sourceNode, targetNode, parameters = []) {
@@ -52,6 +60,7 @@ export function reconcileEquationBindings(existing = [], sourceNode, targetNode,
         candidate.symbol = uniqueSymbol(candidate.symbol, used);
         bindings.push(candidate);
     }
+    bindings.push(timeBinding(used, previous.get('time')?.symbol));
     return bindings;
 }
 

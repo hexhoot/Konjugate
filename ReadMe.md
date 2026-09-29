@@ -42,10 +42,10 @@ Engineers often describe dynamic systems using states and their evolution over t
 A general dynamic system can be represented as:
 
 $$
-\dot{x}=f(x,u)
+\dot{x}=f(x,u,t)
 $$
 
-where $x$ represents the state vector of the system, $u$ represents external inputs and $f$ describes the mathematical relationships governing the evolution of those states.
+where $x$ represents the state vector of the system, $u$ represents external inputs, $t$ represents time and $f$ describes the mathematical relationships governing the evolution of those states.
 
 However, as systems become larger and more interconnected, the function $f$ often becomes a complex collection of coupled relationships between individual components. Understanding, modifying and extending such models can become increasingly difficult.
 
@@ -54,13 +54,13 @@ This project explores a representation where a system is viewed as a network of 
 Instead of defining one large function:
 
 $$
-\dot{x}=f(x,u)
+\dot{x}=f(x,u,t)
 $$
 
 the system dynamics can be composed from smaller interaction models:
 
 $$
-\dot{x_i} = \sum_j f_{ij}(x_i,x_j) + s_i(x_i,u)
+\dot{x_i} = \sum_j f_{ij}(x_i,x_j,t) + s_i(x_i,u,t)
 $$
 
 where:
@@ -68,10 +68,19 @@ where:
 - $x_i$ represents the states contained within a component.
 - $f_{ij}$ represents the interaction model between components.
 - $s_i$ represents sources, sinks or internal processes affecting the component.
+- $t$ represents simulation time, available to every relationship and local term.
 
 ![Graph representation of node states, interactions and local source terms](assets/ForReadme/graphRepresentation.png)
 
 In more practical terms, each node represents a component with values that can change over time. A relationship term $f_{ij}$ describes how one component influences another—for example, convective heat transfer between a battery and its surrounding air. A local term $s_i$ describes what happens within or directly to a component, such as electrical heating, heat loss to the environment or an externally applied input.
+
+Either kind of term can depend on time, and can be piecewise. A heater that only runs during working hours, a supply that drops during a planned outage, or a flow that only exists while a tank is above some level are written directly in the equation. For example,
+
+$$
+s_i = \begin{cases} P & 28800 \le t < 64800 \\ 0 & \text{otherwise} \end{cases}
+$$
+
+heats with power $P$ between 08:00 and 18:00 of the first day ($t$ is in seconds).
 
 Together, these smaller contributions determine how the state of every component evolves.
 

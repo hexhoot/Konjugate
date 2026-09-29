@@ -130,6 +130,15 @@ export function compileExpressionNode(node) {
     return numericLiteralPattern.test(text) ? { literal: Number(text) } : { symbol: text };
 }
 
+const timeTexts = {
+    cpp: { start: 'stepTime', end: '(stepTime + nodeTimeStep)' },
+    python: { start: 'step_time', end: '(step_time + node_time_step)' }
+};
+
+export function symbolTexts(symbols, language) {
+    return new Map(Array.from(symbols, ([key, value]) => [key, value.time ? timeTexts[language][value.time] : value.text]));
+}
+
 export function emitExpression(node, symbols, operators) {
     if ('literal' in node) return doubleLiteral(node.literal);
     if ('boolean' in node) return operators[node.boolean ? 'True' : 'False'];
@@ -181,6 +190,7 @@ export function buildModel(sourceDocument) {
             const programmable = term.implementation != null;
             (term.setsValue === true ? plan.algebraic : plan.contributions).push(buildContribution({
                 entityLabel: `source term on node "${plan.node.name}"`, ownerPlan: plan, alwaysLocal: true,
+                algebraic: term.setsValue === true,
                 bindings: programmable ? term.implementation.bindings : term.expressionModel.bindings,
                 outputStateId: programmable ? term.implementation.output.stateId : term.expressionModel.output.stateId,
                 mathJson: programmable ? null : term.expressionModel.mathJson,
@@ -257,12 +267,18 @@ function orderAlgebraicTasks(plan) {
 }
 
 function buildContribution(spec, stateRecord) {
-    const { entityLabel, ownerPlan, alwaysLocal, bindings, outputStateId, mathJson, implementation, negate, parameters, identifierField } = spec;
+    const { entityLabel, ownerPlan, alwaysLocal, algebraic = false, bindings, outputStateId, mathJson, implementation, negate, parameters, identifierField } = spec;
     const outputLocalIndex = ownerPlan.localIndexByStateId.get(outputStateId);
     if (outputLocalIndex === undefined) throw new Error(`The ${entityLabel} targets a state that is not on its own node.`);
     const symbols = new Map();
     for (const binding of bindings ?? []) {
         const key = binding[identifierField];
+        if (binding.kind === 'time') {
+            // Language-specific, resolved by symbolTexts(): substep start for a derivative, end
+            // for an algebraic term -- the same instants the engine uses.
+            symbols.set(key, { time: algebraic ? 'end' : 'start', comment: 'simulation time' });
+            continue;
+        }
         if (binding.kind === 'parameter') {
             const parameter = (parameters ?? []).find((item) => item.id === binding.parameterId);
             if (!parameter) throw new Error(`The ${entityLabel} has an unresolved parameter binding.`);
@@ -280,7 +296,7 @@ function buildContribution(spec, stateRecord) {
                 : { text: `snapshot[${record.globalIndex}]`, comment: `${record.node.name}.${record.state.name}` });
         }
     }
-    const boundStateIds = (bindings ?? []).filter((binding) => binding.kind !== 'parameter').map((binding) => binding.stateId);
+    const boundStateIds = (bindings ?? []).filter((binding) => binding.kind === 'state' || binding.kind === undefined).map((binding) => binding.stateId);
     return { entityLabel, outputStateId, outputLocalIndex, negate, symbols, mathJson, implementation, boundStateIds };
 }
 
@@ -483,8 +499,7 @@ function commentLines(symbols, prefix, marker) {
 // ---- C++ ----
 
 export function emitCppRegularContribution(contribution) {
-    const symbols = new Map(Array.from(contribution.symbols, ([key, value]) => [key, value.text]));
-    const expression = emitExpression(compileExpressionNode(contribution.mathJson), symbols, cppOperators);
+    const expression = emitExpression(compileExpressionNode(contribution.mathJson), symbolTexts(contribution.symbols, 'cpp'), cppOperators);
     return [
         '        {',
         ...commentLines(contribution.symbols, '            ', '//'),
@@ -513,8 +528,7 @@ export function emitCppAlgebraicTask(task, info) {
             '            const double algebraicValue = outputCollector.gradient();'
         );
     } else {
-        const symbols = new Map(Array.from(task.symbols, ([key, value]) => [key, value.text]));
-        lines.push(`            const double algebraicValue = ${emitExpression(compileExpressionNode(task.mathJson), symbols, cppOperators)};`);
+        lines.push(`            const double algebraicValue = ${emitExpression(compileExpressionNode(task.mathJson), symbolTexts(task.symbols, 'cpp'), cppOperators)};`);
     }
     lines.push(
         '            if (!std::isfinite(algebraicValue)) throw std::runtime_error("An algebraic source term produced a non-finite value.");',
@@ -803,8 +817,7 @@ function pythonSymbolsDict(symbols) {
 }
 
 function emitPythonRegularContribution(contribution) {
-    const symbols = new Map(Array.from(contribution.symbols, ([key, value]) => [key, value.text]));
-    const expression = emitExpression(compileExpressionNode(contribution.mathJson), symbols, pythonOperators);
+    const expression = emitExpression(compileExpressionNode(contribution.mathJson), symbolTexts(contribution.symbols, 'python'), pythonOperators);
     return [
         ...commentLines(contribution.symbols, '        ', '#'),
         `        contribution_value = ${expression}`,
@@ -836,8 +849,7 @@ function emitPythonAlgebraicTask(task, info) {
             '        algebraic_value = outputs.gradient'
         );
     } else {
-        const symbols = new Map(Array.from(task.symbols, ([key, value]) => [key, value.text]));
-        lines.push(`        algebraic_value = ${emitExpression(compileExpressionNode(task.mathJson), symbols, pythonOperators)}`);
+        lines.push(`        algebraic_value = ${emitExpression(compileExpressionNode(task.mathJson), symbolTexts(task.symbols, 'python'), pythonOperators)}`);
     }
     lines.push(
         '        if not math.isfinite(algebraic_value): raise RuntimeError("An algebraic source term produced a non-finite value.")',

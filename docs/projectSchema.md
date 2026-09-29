@@ -34,7 +34,7 @@ Each entry in an edge's `parameters` array contains `id`, `name`, `symbol`, `val
 For an executable relationship, `equationModel` is required and contains:
 
 - `latex`: the editable presentation expression.
-- `bindings`: integer-ID-backed state and parameter bindings with stable expression symbols.
+- `bindings`: integer-ID-backed state and parameter bindings with stable expression symbols, plus an optional time binding `{ kind: "time", symbol }` (symbol `t` by default) giving the simulation time in seconds: the substep's start time for an ordinary contribution, its end time for an algebraic (`setsValue`) term. Source terms accept the same time binding.
 - `output`: the state receiving the expression's derivative contribution.
 - `mathJson`: the executable expression tree. Version 1 supports numeric literals, bound symbols, `Add`, `Multiply`, `Negate`, `Divide`, `Power`, `Sqrt`, `Abs`, `Exp`, `Ln`, `Log`, `Sin`, `Cos`, `Tan`, `Min`, `Max`, and `Which`. `Which` is a piecewise value (LaTeX `\begin{cases}`): `(condition, value)` pairs where the first true condition's value is used and only that value is evaluated. Its last condition must be `True` (`\text{otherwise}`). Conditions are `Less`, `LessEqual`, `Greater`, `GreaterEqual`, `Equal`, `NotEqual` (chained comparisons such as `0 < x < 1` require every adjacent pair to hold) combined with `And`, `Or` and `Not`, and are only valid as `Which` conditions, never as values.
 

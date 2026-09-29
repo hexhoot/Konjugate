@@ -120,19 +120,20 @@ const document = {
             numerics: { substepsPerGlobalStep: 2 },
             sourceTerms: [
                 {
-                    // driver' = 0.5 while driver < 1.4, otherwise 0.1
+                    // driver' = 0.5 while driver < 1.4 and t < 1.23, otherwise 0.1
                     id: 104, state: 'driver', expression: 'cases',
                     expressionModel: {
-                        latex: '', bindings: [{ kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.driver, symbol: 'x' }],
-                        output: { stateId: stateIds.driver }, mathJson: ['Which', ['Less', 'x', '1.4'], '0.5', 'True', '0.1']
+                        latex: '', bindings: [{ kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.driver, symbol: 'x' }, { kind: 'time', symbol: 't' }],
+                        output: { stateId: stateIds.driver }, mathJson: ['Which', ['And', ['Less', 'x', '1.4'], ['Less', 't', '1.23']], '0.5', 'True', '0.1']
                     }
                 },
                 {
-                    // shifted = doubled + 1 -- depends on doubled, which is declared after it
-                    id: 105, state: 'shifted', expression: 'doubled + 1', setsValue: true,
+                    // shifted = doubled + 1 + t -- depends on doubled, which is declared after it,
+                    // and reads the substep's end time
+                    id: 105, state: 'shifted', expression: 'doubled + 1 + t', setsValue: true,
                     expressionModel: {
-                        latex: '', bindings: [{ kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.doubled, symbol: 'y' }],
-                        output: { stateId: stateIds.shifted }, mathJson: ['Add', 'y', '1']
+                        latex: '', bindings: [{ kind: 'state', nodeId: nodeIds.algebraic, stateId: stateIds.doubled, symbol: 'y' }, { kind: 'time', symbol: 't' }],
+                        output: { stateId: stateIds.shifted }, mathJson: ['Add', 'y', '1', 't']
                     }
                 },
                 {
@@ -162,11 +163,12 @@ const document = {
             id: 201, name: 'Source to Squarer', source: { nodeId: nodeIds.source, stateId: stateIds.source }, target: { nodeId: nodeIds.squarer, stateId: stateIds.squarer },
             directionality: 'directed',
             equationModel: {
-                latex: 'k \\sqrt{|x|}', bindings: [
+                latex: 'k \\sqrt{|x|} (1 + 0.1 t)', bindings: [
                     { kind: 'state', role: 'source', nodeId: nodeIds.source, stateId: stateIds.source, symbol: 'x' },
-                    { kind: 'parameter', parameterId: paramIds.k, symbol: 'k' }
+                    { kind: 'parameter', parameterId: paramIds.k, symbol: 'k' },
+                    { kind: 'time', symbol: 't' }
                 ],
-                output: { role: 'target', stateId: stateIds.squarer }, mathJson: ['Multiply', 'k', ['Sqrt', ['Abs', 'x']]]
+                output: { role: 'target', stateId: stateIds.squarer }, mathJson: ['Multiply', 'k', ['Sqrt', ['Abs', 'x']], ['Add', '1', ['Multiply', '0.1', 't']]]
             },
             parameters: [{ id: paramIds.k, name: 'Gain', symbol: 'k', value: 0.4, mode: 'constant' }]
         },

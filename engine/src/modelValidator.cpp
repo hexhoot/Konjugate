@@ -593,6 +593,8 @@ ValidationResult validateModel(const boost::property_tree::ptree& document) {
                         executableSymbols.insert(value(binding.second, "symbol"));
                         if (value(binding.second, "kind") == "parameter") {
                             if (!sourceParameterIds.contains(value(binding.second, "parameterId"))) add(result, "sourceBindingMissing", "error", "Source term binding references a missing parameter.", "node", id, "sourceTerms");
+                        } else if (value(binding.second, "kind") == "time") {
+                            // Simulation time -- always available, nothing to resolve.
                         } else if (!stateIds[id].contains(value(binding.second, "stateId"))) {
                             add(result, "sourceBindingMissing", "error", "Source term binding references a missing local state.", "node", id, "sourceTerms");
                         }
@@ -864,6 +866,8 @@ ValidationResult validateModel(const boost::property_tree::ptree& document) {
             const auto& binding = bindingEntry.second;
             if (value(binding, "kind") == "parameter") {
                 if (!parameterIds.contains(value(binding, "parameterId"))) add(result, "edgeBindingMissing", "error", "Equation binding references a missing parameter.", "edge", id, "equation");
+            } else if (value(binding, "kind") == "time") {
+                // Simulation time -- always available, nothing to resolve.
             } else {
                 const auto bindingNode = value(binding, "nodeId");
                 if ((bindingNode != sourceNode && bindingNode != targetNode) || !stateIds[bindingNode].contains(value(binding, "stateId"))) {

@@ -8,8 +8,8 @@
 //
 // Units: TEU and days. Engine time is seconds, so every rate is divided by the shared
 // secondsPerDay parameter (a literal 1/86400 would parse as an unsupported Rational).
-// Equations have no time symbol, so the port and each zone carry an "elapsedDays" clock state (not "day": the LaTeX parser reads \\mathrm{day} as the unit d) for the
-// time-based rules (the gate outage window and the demand step).
+// The time-based rules (the gate outage window and the demand step) use t, the simulation time in
+// seconds, against day thresholds scaled by secondsPerDay.
 //
 // Where cases are used:
 //   - order-up-to policy: order only while the inventory position is below target
@@ -21,7 +21,7 @@
 // Lead times are Erlang-3: three in-transit stages per inbound lane, so every TEU in transit is
 // a state and the network conserves TEU exactly.
 
-import { reconcileEquationBindings, validateEquationLatex } from '../../../src/equationModel.mjs';
+import { reconcileEquationBindings, timeBinding, validateEquationLatex } from '../../../src/equationModel.mjs';
 
 const secondsPerDay = 86400;
 
@@ -63,7 +63,8 @@ export function buildLogisticsPortNetwork(options = {}) {
         const parameters = [...termParameters, linked(secondsPerDayParameter)];
         const bindings = [
             ...owner.states.map((state) => ({ kind: 'state', nodeId: owner.id, stateId: state.id, symbol: state.symbol })),
-            ...parameters.map((parameter) => ({ kind: 'parameter', parameterId: parameter.id, symbol: parameter.symbol }))
+            ...parameters.map((parameter) => ({ kind: 'parameter', parameterId: parameter.id, symbol: parameter.symbol })),
+            timeBinding()
         ];
         const validation = validateEquationLatex(latex, bindings);
         if (!validation.valid) throw new Error(`${owner.name} ${stateSymbol}: ${validation.errors.join(' ')}`);
@@ -109,10 +110,8 @@ export function buildLogisticsPortNetwork(options = {}) {
 
     // ---- nodes -------------------------------------------------------------------------------
     const port = node('Port', 'Port', [-8, 0, 0], '#2e7591', [
-        ['yard', 'Yard stock', 300, 'TEU'],
-        ['elapsedDays', 'Elapsed days', 0, 'day']
+        ['yard', 'Yard stock', 300, 'TEU']
     ]);
-    sourceTerm(port, 'elapsedDays', '\\frac{1}{\\mathrm{secondsPerDay}}');
     sourceTerm(port, 'yard', '\\frac{\\mathrm{vesselArrivals}}{\\mathrm{secondsPerDay}}', [linked(vesselArrivals)]);
 
     const warehouses = [
@@ -149,7 +148,7 @@ export function buildLogisticsPortNetwork(options = {}) {
     const position = '\\mathrm{targetOnHand} + \\mathrm{targetLane1} + \\mathrm{targetLane2} + \\mathrm{targetLane3}';
     const target = '\\mathrm{targetForecast} \\cdot (\\mathrm{leadTime} + \\mathrm{coverDays} + \\mathrm{adjustDays})';
     const order = `\\begin{cases} \\mathrm{targetForecast} + \\frac{\\mathrm{targetForecast} \\cdot (\\mathrm{leadTime} + \\mathrm{coverDays}) - (${position})}{\\mathrm{adjustDays}} & ${position} < ${target} \\\\ 0 & \\text{otherwise} \\end{cases}`;
-    const gate = '\\mathrm{gateShare} \\cdot \\begin{cases} \\mathrm{outageCapacity} & \\mathrm{outageStart} \\le \\mathrm{sourceElapsedDays} < \\mathrm{outageEnd} \\\\ \\mathrm{gateCapacity} & \\text{otherwise} \\end{cases}';
+    const gate = '\\mathrm{gateShare} \\cdot \\begin{cases} \\mathrm{outageCapacity} & \\mathrm{outageStart} \\cdot \\mathrm{secondsPerDay} \\le t < \\mathrm{outageEnd} \\cdot \\mathrm{secondsPerDay} \\\\ \\mathrm{gateCapacity} & \\text{otherwise} \\end{cases}';
     for (const warehouse of warehouses) {
         edge(`Dispatch to ${warehouse.name}`, port, warehouse.node, 'lane1', 'bidirectional',
             `\\frac{1}{\\mathrm{secondsPerDay}} \\cdot \\min(${order}, \\min(${gate}, \\frac{\\mathrm{gateShare} \\cdot \\mathrm{sourceYard}}{\\mathrm{yardDrainDays}}))`,
@@ -172,15 +171,13 @@ export function buildLogisticsPortNetwork(options = {}) {
         const zone = node(spec.name, 'Demand zone', spec.position, '#52727a', [
             ['backlog', 'Backlog', spec.demand * 0.5, 'TEU'],
             ['delivered', 'Delivered (cumulative)', 0, 'TEU'],
-            ['ordered', 'Ordered (cumulative)', 0, 'TEU'],
-            ['elapsedDays', 'Elapsed days', 0, 'day']
+            ['ordered', 'Ordered (cumulative)', 0, 'TEU']
         ]);
         const baseDemand = shared(`${spec.name} demand`, `zone${spec.name.at(-1)}Demand`, spec.demand, 'TEU/day');
         const demandParameters = () => [linked(baseDemand, 'baseDemand'), linked(stepMultiplier), linked(stepDay)];
-        const demand = (day) => `\\mathrm{baseDemand} \\cdot \\begin{cases} \\mathrm{stepMultiplier} & ${day} \\ge \\mathrm{stepDay} \\\\ 1 & \\text{otherwise} \\end{cases}`;
-        sourceTerm(zone, 'elapsedDays', '\\frac{1}{\\mathrm{secondsPerDay}}');
-        sourceTerm(zone, 'backlog', `\\frac{${demand('\\mathrm{elapsedDays}')}}{\\mathrm{secondsPerDay}}`, demandParameters());
-        sourceTerm(zone, 'ordered', `\\frac{${demand('\\mathrm{elapsedDays}')}}{\\mathrm{secondsPerDay}}`, demandParameters());
+        const demand = '\\mathrm{baseDemand} \\cdot \\begin{cases} \\mathrm{stepMultiplier} & t \\ge \\mathrm{stepDay} \\cdot \\mathrm{secondsPerDay} \\\\ 1 & \\text{otherwise} \\end{cases}';
+        sourceTerm(zone, 'backlog', `\\frac{${demand}}{\\mathrm{secondsPerDay}}`, demandParameters());
+        sourceTerm(zone, 'ordered', `\\frac{${demand}}{\\mathrm{secondsPerDay}}`, demandParameters());
 
         // Shipments leave the warehouse and arrive as deliveries (bidirectional), and the same
         // amount clears the zone's backlog (directed, negative). Zone 2 is cut off below safety stock.
@@ -195,7 +192,7 @@ export function buildLogisticsPortNetwork(options = {}) {
         edge(`Clear ${spec.name} backlog`, spec.warehouse.node, zone, 'backlog', 'directed', `-${shipment.startsWith('\\begin') ? `(${shipment})` : shipment}`, shipParameters(), '#73b9c2');
         // What the zone orders feeds the warehouse's demand forecast (exponential smoothing).
         edge(`${spec.name} demand signal`, zone, spec.warehouse.node, 'forecast', 'directed',
-            `\\frac{${demand('\\mathrm{sourceElapsedDays}')}}{\\mathrm{secondsPerDay} \\cdot \\mathrm{smoothingDays}}`, [...demandParameters(), linked(smoothingDays)], '#8aa0a8');
+            `\\frac{${demand}}{\\mathrm{secondsPerDay} \\cdot \\mathrm{smoothingDays}}`, [...demandParameters(), linked(smoothingDays)], '#8aa0a8');
         spec.node = zone;
     }
 
@@ -205,7 +202,7 @@ export function buildLogisticsPortNetwork(options = {}) {
         const source = [port, ...warehouses.map((w) => w.node), ...zones.map((z) => z.node)].find((candidate) => candidate.id === item.source.nodeId);
         item.source.stateId = item.directionality === 'bidirectional'
             ? stateOf(source, source === port ? 'yard' : 'onHand').id
-            : (source.states.find((state) => state.symbol === 'elapsedDays') ?? source.states[0]).id;
+            : source.states[0].id;
     }
 
     const runConfigurationId = id();
