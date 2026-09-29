@@ -63,6 +63,7 @@
                 </button>
                 <button id="extensionsButton" type="button" aria-label="Manage extensions" aria-haspopup="dialog" data-tooltip="Extensions">
         <img class="documentActionIcon" src="../../assets/extensions.svg" alt="">
+        <span id="extensionsRestartBadge" class="diagnosticsBadge" hidden></span>
     </button>
                 <button id="exampleGuideButton" class="exampleGuideButton" type="button" aria-label="About this example" data-tooltip="About this example" hidden>?</button>
             </div>
@@ -251,6 +252,14 @@
             </div>
             <div class="shapeLibraryDomains" id="extensionsDomains" role="tablist" hidden></div>
             <p id="extensionsRestartNotice" class="assistantConfigurationStatus" role="status" hidden></p>
+            <!-- Persistent for as long as a restart is actually pending (see #extensionsRestartBadge
+                 on the title bar button above, which mirrors this same state across every open
+                 window) -- unlike #extensionsRestartNotice above, which is just the last action's
+                 one-shot message and clears the next time something else happens. -->
+            <div id="extensionsRestartPendingNotice" class="extensionsRestartPendingNotice" role="status" hidden>
+                <span>A restart is needed for recent add-on/plugin changes to take effect.</span>
+                <button id="extensionsRestartNow" type="button" class="extensionsToggleButton">Restart Konjugate</button>
+            </div>
             <p id="extensionsDiscoverStale" class="assistantConfigurationStatus" role="status" hidden>Showing a previously-fetched list — could not reach the registry just now.</p>
             <div class="examplesExplorerBody extensionsBody">
                 <div class="examplesExplorerBrowse">

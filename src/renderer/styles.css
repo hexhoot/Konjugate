@@ -190,6 +190,10 @@ input, select, textarea { user-select: text; }
 .extensionsItem b { display: block; }
 .extensionsItemMeta { display: block; margin-top: 2px; color: #647984; font-size: 7px; }
 #extensionsRestartNotice { margin-top: 8px; }
+.extensionsRestartPendingNotice { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 8px 10px; color: #d6a35f; background: rgb(214 163 95 / 8%); border: 1px solid #4a3f2e; border-radius: 5px; font-size: 8px; }
+.extensionsRestartPendingNotice[hidden] { display: none; }
+.extensionsRestartPendingNotice .extensionsToggleButton { flex-shrink: 0; color: #d6a35f; border-color: #4a3f2e; }
+.extensionsRestartPendingNotice .extensionsToggleButton:hover { color: #f0c785; background: rgb(214 163 95 / 12%); }
 /* The examplesExplorer detail-pane rules above are ID-scoped to that dialog; this dialog's
    detail pane has a different structure (badge/facts/permissions instead of a thumbnail), so it
    gets its own ID rules here rather than trying to share the examplesExplorer ones. */
@@ -316,6 +320,7 @@ input, select, textarea { user-select: text; }
 .windowControls .titleAssistantControl[aria-expanded="true"] { color: #a1f2ea; background: rgb(66 201 188 / 10%); }
 .windowControls .titleAssistantControl:disabled { color: #344751; cursor: default; }
 #diagnosticsButton { color: #5c7079; font-size: 12px; }
+#extensionsButton { position: relative; }
 .diagnosticsBadge {
     position: absolute; top: 6px; right: 4px; min-width: 13px; height: 13px; padding: 0 3px;
     color: #1a0d0f; background: #e0929a; border-radius: 7px; font-size: 7px; font-weight: 750;

@@ -38,3 +38,17 @@ pre { overflow: auto; padding: 14px; background: #071017; border: 1px solid #243
 .cardThumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .cardThumbPlaceholder { width: 100%; height: 100%; background: linear-gradient(135deg, #0d1e24, #142e35); }
 .cardTitle { padding: 8px 10px 10px; color: #cfe0e3; font-size: 11.5px; line-height: 1.4; }
+/* The one-time starter-pack offer (see renderRecommendedAddons() in renderer.mjs) -- an in-app
+   action, not a link-out card, so it gets its own block rather than reusing .card/.cardGrid. */
+.recommendedAddons { padding: 16px 18px; background: rgb(66 201 188 / 6%); border: 1px solid #243944; border-left: 2px solid #42c9bc; border-radius: 7px; }
+.recommendedAddons h2 { margin-top: 0; padding-top: 0; border-top: 0; }
+.recommendedAddonsList { margin: 0 0 14px; padding-left: 18px; }
+.recommendedAddonsList li { margin-bottom: 6px; }
+.recommendedAddonsList strong { display: block; color: #e6f0f2; font-size: 12px; }
+.recommendedAddonsList span { color: #8499a3; font-size: 11px; }
+.recommendedAddons button { height: 30px; padding: 0 14px; color: #09201e; background: #42c9bc; border: 0; border-radius: 5px; font-size: 11px; font-weight: 600; cursor: pointer; }
+.recommendedAddons button:hover { background: #59d6ca; }
+.recommendedAddons button:disabled { color: #6b8a86; background: #1e3532; cursor: default; }
+.recommendedAddonsStatus { margin: 10px 0 0; }
+.recommendedAddonsStatus[hidden] { display: none; }
+.recommendedAddonsStatus button { height: 24px; padding: 0 10px; margin-left: 4px; font-size: 10px; font-weight: 500; vertical-align: baseline; }

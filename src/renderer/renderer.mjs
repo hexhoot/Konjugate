@@ -117,6 +117,17 @@ console.warn = (...args) => {
 };
 window.diagnostics?.list().then((entries) => entries.forEach(addDiagnosticsEntry));
 window.diagnostics?.onIssue(addDiagnosticsEntry);
+
+// Mirrors the diagnostics badge's pull-then-push pattern above: restartPending() covers a window
+// opened after the flag was already set in another window, onRestartPendingChange covers it
+// changing while this window stays open. Never cleared client-side -- only an actual restart does.
+function renderRestartPending(pending) {
+    $('#extensionsRestartBadge').hidden = !pending;
+    $('#extensionsRestartPendingNotice').hidden = !pending;
+}
+window.extensions?.restartPending().then(renderRestartPending);
+window.extensions?.onRestartPendingChange(renderRestartPending);
+$('#extensionsRestartNow').addEventListener('click', () => window.applicationInfo.restart());
 const defaultWorkerThreads = Math.max(1, Math.min(256, Number(navigator.hardwareConcurrency) || 1));
 let nextModelEntityId = 1;
 const validModelEntityId = (value) => Number.isSafeInteger(value) && value > 0;

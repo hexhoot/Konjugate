@@ -9,6 +9,7 @@
     "title": "Results Analysis",
     "description": "Plotly-backed time-series, scatter and distribution plots for exploring and comparing Konjugate simulation results, with CSV export.",
     "license": "MPL-2.0",
+    "recommended": true,
     "url": "https://github.com/zenineasa/Konjugate-ResultPlotViewer",
     "packages": [
         { "packageType": "addon", "packageId": "konjugate.resultPlotViewer" }

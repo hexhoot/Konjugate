@@ -149,6 +149,17 @@ let aiProviderRegistry = null;
 let aiConfigurationStore = null;
 let providerToolchainStore = null;
 let extensionStateStore = null;
+// Set once an add-on/plugin is installed or uninstalled (not FMUs, and not enable/disable --
+// both already take effect immediately) and never cleared except by an actual restart, since
+// that's what makes it true again. Broadcast to every open window, not just the one the install
+// happened in, since a restart affects the whole app.
+let packageRestartPending = false;
+function markPackageRestartPending() {
+    packageRestartPending = true;
+    for (const window of projectWindows) {
+        if (!window.isDestroyed()) window.webContents.send('packageRestartPendingChanged', true);
+    }
+}
 let applicationShutdownPromise = null;
 let applicationShutdownComplete = false;
 
@@ -359,6 +370,46 @@ async function welcomeVideoCards() {
     return welcomeVideoCardsCache;
 }
 
+// A one-time starter-pack offer (see the Recommended add-ons section of docs/addonExplorer.md):
+// shown once ever, regardless of what the person does with it -- declining is as final as
+// accepting, per that section's "must be ... never repeated once declined or accepted". The flag
+// is only written at the moment something is actually about to be shown (see openWelcomeWindow
+// below), not just because this function ran, so a quiet launch (registry unreachable, or nothing
+// left to recommend) doesn't burn the one-time offer on nothing.
+const recommendedAddonsOfferedPath = () => join(app.getPath('userData'), 'recommendedAddonsOffered.json');
+async function hasOfferedRecommendedAddons() {
+    try {
+        return JSON.parse(await readFile(recommendedAddonsOfferedPath(), 'utf8')).offered === true;
+    } catch {
+        return false;
+    }
+}
+async function markRecommendedAddonsOffered() {
+    const temporaryPath = `${recommendedAddonsOfferedPath()}.${randomUUID()}.tmp`;
+    await writeFile(temporaryPath, JSON.stringify({ offered: true }));
+    await rename(temporaryPath, recommendedAddonsOfferedPath());
+}
+
+// Entries the live (or cache/bundled-fallback) registry flags recommended:true, minus whatever's
+// already installed or bundled -- recomputed fresh each launch rather than cached, since "already
+// installed" can change between launches independently of the one-time offered flag.
+async function recommendedAddonEntries() {
+    let registry;
+    try {
+        registry = (await discoverableRegistry()).registry;
+    } catch {
+        return [];
+    }
+    await discoverAddons();
+    const installedIds = new Set([
+        ...(await listInstalledPackages(join(app.getPath('userData'), 'packages'))).map((entry) => entry.packageId),
+        ...[...addonRegistry.values()].map(({ manifest }) => manifest.addonId)
+    ]);
+    return Object.entries(registry.prefixes ?? {})
+        .filter(([, entry]) => entry.recommended && entry.packages.some((declared) => !installedIds.has(declared.packageId)))
+        .map(([prefix, entry]) => ({ prefix, ...entry }));
+}
+
 async function openWelcomeWindow(projectWindow) {
     const [markdown, videoCards, posts] = await Promise.all([
         readFile(welcomeMarkdownPath(), 'utf8'),
@@ -366,11 +417,14 @@ async function openWelcomeWindow(projectWindow) {
         fetchRecentBlogPosts()
     ]);
     const postCards = posts.map((post) => ({ section: 'post', title: post.title, url: post.link, thumbnailUrl: post.thumbnailUrl }));
+    const recommendedAddons = (await hasOfferedRecommendedAddons()) ? [] : await recommendedAddonEntries();
+    if (recommendedAddons.length) await markRecommendedAddonsOffered();
     return openGuideWindow(projectWindow, {
         title: 'Konjugate',
         version: app.getVersion(),
         markdown,
         cards: [...videoCards, ...postCards],
+        recommendedAddons,
         kind: 'welcome'
     });
 }
@@ -1179,6 +1233,7 @@ ipcMain.handle('packageInstall', async (event) => {
         directory: join(app.getPath('userData'), 'packages')
     });
     await discoverAddons();
+    markPackageRestartPending();
     return {
         packageType: installed.packageManifest.packageType,
         packageId: installed.packageManifest.packageId,
@@ -1214,6 +1269,7 @@ ipcMain.handle('packageUninstall', async (_event, { packageType, packageId, vers
     await uninstallPackage({ directory: join(app.getPath('userData'), 'packages'), packageType, packageId, version });
     await discoverAddons();
     await discoverComponentLibrary();
+    markPackageRestartPending();
     return { packageType, packageId, version };
 });
 
@@ -1222,6 +1278,15 @@ ipcMain.handle('packageSetEnabled', async (_event, { packageType, packageId, ver
     await discoverAddons();
     await discoverComponentLibrary();
     return { packageType, packageId, version, enabled };
+});
+
+// Pull-based initial state (mirrors diagnosticsList/onIssue's split) for a window opened after the
+// flag was already set elsewhere; packageRestartPendingChanged above is the live-update push.
+ipcMain.handle('packageRestartPending', () => packageRestartPending);
+
+ipcMain.handle('applicationRestart', () => {
+    app.relaunch();
+    app.exit(0);
 });
 
 // A registry entry's own project/commercial-license/contact links (see docs/addonExplorer.md) point
@@ -1260,7 +1325,10 @@ async function loadBundledRegistry() {
     }
 }
 
-ipcMain.handle('packageDiscoverRegistry', async () => {
+// Shared by the packageDiscoverRegistry IPC handler (below) and the Welcome window's recommended-
+// add-ons check -- both need "live registry, falling back to the last successful fetch, falling
+// back to what's bundled with this install" and shouldn't have two copies of that fallback chain.
+async function discoverableRegistry() {
     const bundled = await loadBundledRegistry();
     try {
         const remote = await fetchRemoteRegistry();
@@ -1285,7 +1353,9 @@ ipcMain.handle('packageDiscoverRegistry', async () => {
             throw error;
         }
     }
-});
+}
+
+ipcMain.handle('packageDiscoverRegistry', () => discoverableRegistry());
 
 // entry comes from whatever packageDiscoverRegistry last returned to this renderer -- not
 // re-fetched here, so what gets installed is exactly what the user saw when they clicked Install,
@@ -1303,22 +1373,45 @@ ipcMain.handle('packageDiscoverRegistry', async () => {
 // registry that was never successfully fetched even once) -- rare enough that just-fetched-and-not-
 // yet-cached is not worth special-casing, since packageDiscoverRegistry writes its cache immediately
 // after every successful fetch, before the renderer could have shown an Install button at all.
-ipcMain.handle('packageInstallFromRegistry', async (_event, { entry, namespaces }) => {
-    let trustedNamespaces = namespaces;
+// Shared with welcomeInstallRecommendedAddons below, which needs the identical trust derivation.
+async function trustedRegistryNamespaces(rendererNamespaces) {
     try {
         const cached = JSON.parse(await readFile(registryCachePath(), 'utf8'));
         const bundled = await loadBundledRegistry();
-        trustedNamespaces = { prefixes: { ...(namespaces?.prefixes ?? {}), ...bundled.prefixes, ...(cached.prefixes ?? {}) } };
+        return { prefixes: { ...(rendererNamespaces?.prefixes ?? {}), ...bundled.prefixes, ...(cached.prefixes ?? {}) } };
     } catch {
-        // Fall back to renderer supplied namespaces
+        return rendererNamespaces;
     }
+}
+
+ipcMain.handle('packageInstallFromRegistry', async (_event, { entry, namespaces }) => {
     const results = await installFromRegistryEntry(entry, {
-        namespaces: trustedNamespaces,
+        namespaces: await trustedRegistryNamespaces(namespaces),
         directory: join(app.getPath('userData'), 'packages'),
         overwrite: true
     });
     await discoverAddons();
     await discoverComponentLibrary();
+    markPackageRestartPending();
+    return results;
+});
+
+// The Welcome window's one-time starter-pack action (see recommendedAddonEntries/openWelcomeWindow
+// above) -- entries are exactly what that window was shown, not re-fetched, matching
+// packageInstallFromRegistry's "install what you saw" reasoning above. Installs every entry's
+// packages in sequence rather than one at a time from the renderer, since this is a single "Install
+// recommended" click covering however many entries are currently recommended, not a per-entry pick.
+ipcMain.handle('welcomeInstallRecommendedAddons', async (_event, entries) => {
+    const namespaces = await trustedRegistryNamespaces(null);
+    const results = [];
+    for (const entry of entries) {
+        results.push(...await installFromRegistryEntry(entry, {
+            namespaces, directory: join(app.getPath('userData'), 'packages'), overwrite: true
+        }));
+    }
+    await discoverAddons();
+    await discoverComponentLibrary();
+    markPackageRestartPending();
     return results;
 });
 

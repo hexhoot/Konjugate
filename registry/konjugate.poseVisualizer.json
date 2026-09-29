@@ -10,6 +10,7 @@
     "description": "A Three.js 6-DOF pose visualizer for Konjugate results, with timeline-synced playback.",
     "license": "MPL-2.0",
     "domain": "robotics",
+    "recommended": true,
     "url": "https://github.com/zenineasa/Konjugate-PoseVisualizer",
     "packages": [
         { "packageType": "addon", "packageId": "konjugate.poseVisualizer" }

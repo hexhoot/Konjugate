@@ -61,21 +61,61 @@ function renderCardSection(heading, cards) {
     return `<h2>${escapeHtml(heading)}</h2><div class="cardGrid">${cards.map(renderCard).join('')}</div>`;
 }
 
+// The one-time starter-pack offer (see the Recommended add-ons section of docs/addonExplorer.md).
+// A distinct block rather than reusing renderCard/renderCardSection above -- those are built for
+// "thumbnail + title, links out on click," and this needs an in-app action (install, then an
+// inline result) instead, which is a different interaction shape, not just different content.
+function renderRecommendedAddons(entries) {
+    if (!entries.length) return '';
+    const items = entries.map((entry) => `<li><strong>${escapeHtml(entry.title || entry.prefix)}</strong><span>${escapeHtml(entry.description || '')}</span></li>`).join('');
+    return `<div class="recommendedAddons">
+        <h2>Recommended for you</h2>
+        <p>These aren't installed yet, and add real functionality most projects end up wanting.</p>
+        <ul class="recommendedAddonsList">${items}</ul>
+        <button id="installRecommendedAddons" type="button">Install recommended</button>
+        <p id="recommendedAddonsStatus" class="recommendedAddonsStatus" hidden></p>
+    </div>`;
+}
+
 document.querySelector('#minimize').addEventListener('click', () => window.windowControls.minimize());
 document.querySelector('#maximize').addEventListener('click', () => window.windowControls.toggleMaximize());
 document.querySelector('#close').addEventListener('click', () => window.windowControls.close());
 window.windowControls.onMaximizedChange((expanded) => { document.querySelector('#maximize').textContent = expanded ? '❐' : '□'; });
-window.exampleGuide.onContent(({ title, version, markdown, cards = [], kind = 'example' }) => {
+window.exampleGuide.onContent(({ title, version, markdown, cards = [], recommendedAddons = [], kind = 'example' }) => {
     const suffix = guideKindSuffix(kind);
     document.title = `${title} · ${suffix}`;
     document.querySelector('#guideTitle').textContent = `${title} · ${suffix}`;
     const versionHeading = version ? `<h1>Welcome to Konjugate v${escapeHtml(version)}</h1>` : '';
     document.querySelector('#content').innerHTML = versionHeading + renderMarkdown(markdown)
+        + renderRecommendedAddons(recommendedAddons)
         + renderCardSection('Get started', cards.filter((card) => card.section === 'video'))
         + renderCardSection('Recent from the blog', cards.filter((card) => card.section === 'post'));
     document.querySelectorAll('[data-external-link]').forEach((link) => link.addEventListener('click', (event) => {
         event.preventDefault();
         window.exampleGuide.openExternal(link.href);
     }));
+    document.querySelector('#installRecommendedAddons')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        const status = document.querySelector('#recommendedAddonsStatus');
+        button.disabled = true;
+        button.textContent = 'Installing…';
+        try {
+            const results = await window.exampleGuide.installRecommendedAddons(recommendedAddons);
+            const summary = results.map((result) => `${result.packageId} ${result.version}`).join(', ');
+            status.hidden = false;
+            status.innerHTML = `Installed ${escapeHtml(summary)}. `;
+            const restartButton = document.createElement('button');
+            restartButton.type = 'button';
+            restartButton.textContent = 'Restart Konjugate';
+            restartButton.addEventListener('click', () => window.exampleGuide.restart());
+            status.appendChild(restartButton);
+            button.remove();
+        } catch (error) {
+            button.disabled = false;
+            button.textContent = 'Install recommended';
+            status.hidden = false;
+            status.textContent = `Installation failed: ${error.message}`;
+        }
+    });
     document.querySelector('#content').scrollTop = 0;
 });

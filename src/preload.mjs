@@ -35,7 +35,8 @@ contextBridge.exposeInMainWorld('windowControls', {
 contextBridge.exposeInMainWorld('applicationInfo', {
     get: () => ipcRenderer.invoke('applicationInfo'),
     openWelcome: () => ipcRenderer.invoke('applicationOpenWelcome'),
-    openExternal: (url) => ipcRenderer.invoke('applicationOpenExternal', url)
+    openExternal: (url) => ipcRenderer.invoke('applicationOpenExternal', url),
+    restart: () => ipcRenderer.invoke('applicationRestart')
 });
 
 contextBridge.exposeInMainWorld('diagnostics', {
@@ -73,7 +74,15 @@ contextBridge.exposeInMainWorld('extensions', {
     // Separate from applicationInfo.openExternal's fixed allowlist -- a registry entry's own links
     // point at whatever a third-party publisher declared, so this confirms with the person first
     // instead (see the matching handler in src/main.mjs).
-    openRegistryLink: (url) => ipcRenderer.invoke('packageOpenRegistryLink', url)
+    openRegistryLink: (url) => ipcRenderer.invoke('packageOpenRegistryLink', url),
+    // Set once an install/uninstall needs a restart to take effect (not enable/disable, not FMUs --
+    // both already apply immediately) and never cleared except by an actual restart. restartPending
+    // is the pull-based initial state for a window that opened after the flag was already set
+    // elsewhere; onRestartPendingChange is the live push for as long as this window stays open.
+    restartPending: () => ipcRenderer.invoke('packageRestartPending'),
+    onRestartPendingChange: (callback) => {
+        ipcRenderer.on('packageRestartPendingChanged', (_event, pending) => callback(pending));
+    }
 });
 
 contextBridge.exposeInMainWorld('shapeLibrary', {

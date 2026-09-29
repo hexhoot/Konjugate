@@ -471,6 +471,33 @@ test('loadNamespaceRegistry rejects an invalid packageType', async () => {
     });
 });
 
+test('loadNamespaceRegistry accepts recommended:true alongside downloadUrl/packages', async () => {
+    const entry = minimalEntry({
+        recommended: true, downloadUrl: 'https://example.org/latest.zip',
+        packages: [{ packageType: 'addon', packageId: 'example.fintech.toolbox' }]
+    });
+    await withRegistry({ 'example.fintech.json': entry }, async (directory) => {
+        const { prefixes } = await loadNamespaceRegistry(directory);
+        assert.equal(prefixes['example.fintech'].recommended, true);
+    });
+});
+
+test('loadNamespaceRegistry rejects a non-boolean recommended', async () => {
+    const entry = minimalEntry({ recommended: 'yes' });
+    await withRegistry({ 'example.fintech.json': entry }, async (directory) => {
+        await assert.rejects(() => loadNamespaceRegistry(directory),
+            (error) => error instanceof PackageArchiveError && error.code === 'INVALID_REGISTRY_ENTRY' && /must be a boolean/.test(error.message));
+    });
+});
+
+test('loadNamespaceRegistry rejects recommended:true without downloadUrl/packages', async () => {
+    const entry = minimalEntry({ recommended: true });
+    await withRegistry({ 'example.fintech.json': entry }, async (directory) => {
+        await assert.rejects(() => loadNamespaceRegistry(directory),
+            (error) => error instanceof PackageArchiveError && error.code === 'INVALID_REGISTRY_ENTRY' && /must also declare downloadUrl and packages/.test(error.message));
+    });
+});
+
 test('a package signed under a prefix loaded from a real registry directory verifies end to end', async () => {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
     const entry = minimalEntry({ publicKeys: [pem(publicKey, 'spki')] });

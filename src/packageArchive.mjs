@@ -396,6 +396,13 @@ export function validateNamespaceEntry(entry, prefix) {
     for (const optional of ['title', 'description', 'license', 'commercialLicenseUrl', 'domain', 'url', 'downloadUrl']) {
         if (entry[optional] !== undefined && (typeof entry[optional] !== 'string' || !entry[optional])) invalid(`${optional}, if present, must be a non-empty string.`);
     }
+    // Surfaced in the Welcome window's one-time starter-pack offer (see the Recommended add-ons
+    // section of docs/addonExplorer.md) -- meaningless on an entry with nothing to install, so it
+    // requires the same fields Discover's one-click install already requires.
+    if (entry.recommended !== undefined) {
+        if (typeof entry.recommended !== 'boolean') invalid('recommended, if present, must be a boolean.');
+        if (entry.recommended && (!entry.downloadUrl || !entry.packages)) invalid('recommended entries must also declare downloadUrl and packages.');
+    }
     if (entry.packages !== undefined) {
         if (!Array.isArray(entry.packages) || !entry.packages.length) invalid('packages, if present, must be a non-empty list.');
         for (const [index, item] of entry.packages.entries()) {

@@ -39,6 +39,7 @@ Add any of these to also make the prefix discoverable, once there's an Explorer 
 - `url` — one link to the project, typically its repository.
 - `packages` — the package(s) this prefix's reservation covers, each `{ "packageType": "addon" | "plugin", "packageId": "..." }`. Every listed `packageId` must actually fall under this entry's own prefix — a registry entry can't name another prefix's package (see the Multi-package bundles section of `docs/addonExplorer.md` for why: it would let one entry borrow another's verified status by association).
 - `downloadUrl` — where to get every package `packages` lists, as one archive (in the common case, a release zip containing all of them — see `docs/addonExplorer.md`'s Multi-package bundles section on why a bundle is one download, not one per package).
+- `recommended` — `true` to appear in the Welcome window's one-time starter-pack offer (see the Recommended add-ons section of `docs/addonExplorer.md`). Requires `downloadUrl` and `packages` to already be set, same as any other installable entry — there's nothing to recommend installing otherwise.
 
 ## Signing a package
 
