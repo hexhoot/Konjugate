@@ -7,9 +7,11 @@ import { auxiliaryWindowBounds, auxiliaryWindowPresentation } from '../src/windo
 test('opens macOS full-screen auxiliary windows independently in their own Space', () => {
     const mainWindow = { isDestroyed: () => false, isFullScreen: () => true };
     assert.deepEqual(auxiliaryWindowPresentation(mainWindow, 'darwin'), { fullscreen: true });
-    assert.deepEqual(auxiliaryWindowPresentation(mainWindow, 'win32'), { parent: mainWindow });
+    // Auxiliary windows are never parented to their project window, so either can be brought to
+    // the front without minimizing or closing the other.
+    assert.deepEqual(auxiliaryWindowPresentation(mainWindow, 'win32'), {});
     mainWindow.isFullScreen = () => false;
-    assert.deepEqual(auxiliaryWindowPresentation(mainWindow, 'darwin'), { parent: mainWindow });
+    assert.deepEqual(auxiliaryWindowPresentation(mainWindow, 'darwin'), {});
 });
 
 // A menu bar 25px tall sits above this work area, matching a typical macOS display.

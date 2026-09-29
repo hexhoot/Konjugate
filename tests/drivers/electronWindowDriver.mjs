@@ -126,7 +126,8 @@ export function createElectronDriver(mainWindow) {
             providerExecutionModeSelector: true,
             cppProviders: true,
             renderedExampleGuide: true,
-            aiAssistant: true
+            aiAssistant: true,
+            cancellableValidation: true
         },
         async dispose() {
             // Nothing to tear down -- the suite's own caller (src/main.mjs) owns the app/window

@@ -155,7 +155,9 @@ export function createPlaywrightWebDriver(context, initialPage) {
             // for window.aiProviders' credential-vault machinery at all (confirmed: renderer.mjs
             // has exactly one call site, gating every assistant request the same way regardless
             // of provider). A real, separate gap, not a driver limitation.
-            aiAssistant: false
+            aiAssistant: false,
+            // The web engine validates in-process and cannot abort a validation it has started.
+            cancellableValidation: false
         },
         async dispose() {
             await context.close().catch(() => {});

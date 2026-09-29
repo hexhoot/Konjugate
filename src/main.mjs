@@ -2192,12 +2192,25 @@ async function runCliMode() {
 
 ipcMain.handle('engineCapabilities', async () => getEngineCapabilities(await engineOptions()));
 
-ipcMain.handle('engineValidate', async (event, content) => {
-    const active = { owner: event.sender, controller: new AbortController(), completion: null };
+// `supersede` names a stream of validations of the same thing (the canvas passes 'model'): a new
+// request cancels that window's previous one still in flight, whose result would only be thrown
+// away. A validation cancelled that way, or because its window closed, resolves to
+// { cancelled: true } -- a cancellation is an outcome, not an engine failure. Real failures still
+// reject.
+ipcMain.handle('engineValidate', async (event, content, { supersede = null } = {}) => {
+    if (supersede) {
+        for (const previous of activeValidationOperations) {
+            if (previous.owner === event.sender && previous.supersede === supersede) previous.controller.abort();
+        }
+    }
+    const active = { owner: event.sender, supersede, controller: new AbortController(), completion: null };
     activeValidationOperations.add(active);
     try {
         active.completion = validateWithEngine(content, { ...await engineOptions(), signal: active.controller.signal });
         return await active.completion;
+    } catch (error) {
+        if (active.controller.signal.aborted) return { cancelled: true };
+        throw error;
     } finally {
         activeValidationOperations.delete(active);
     }

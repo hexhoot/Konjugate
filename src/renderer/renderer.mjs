@@ -3938,8 +3938,9 @@ function scheduleEngineValidation(projectDocument = null) {
     renderValidationPending();
     engineValidationTimer = setTimeout(async () => {
         try {
-            const result = await window.engine.validate(JSON.stringify(stripEdgeGroups(executionProjectDocument(projectDocument ?? serializeProjectDocument()))));
-            if (revision !== validationRevision) return;
+            const result = await window.engine.validate(JSON.stringify(stripEdgeGroups(executionProjectDocument(projectDocument ?? serializeProjectDocument()))), { supersede: 'model' });
+            // A cancelled validation was superseded by a newer one, which will render its own result.
+            if (result.cancelled || revision !== validationRevision) return;
             if (!result.available) {
                 renderValidationFailure('The C++ validation engine is unavailable. Build the engine before editing or running models.');
                 return;
@@ -6504,7 +6505,7 @@ async function previewAssistantProposal(proposal) {
         const prepared = buildAssistantProposal(baseDocument, proposal);
         renderAssistantProposal(proposal, prepared);
         const validation = await window.engine.validate(JSON.stringify(prepared.document));
-        if (revision !== assistantPreviewRevision) return { valid: false, superseded: true };
+        if (validation.cancelled || revision !== assistantPreviewRevision) return { valid: false, superseded: true };
         if (!validation.available) throw new Error('The native validation engine is unavailable.');
         if (!validation.report.valid) {
             const message = validation.report.issues
@@ -6549,6 +6550,9 @@ function discardAssistantProposal() {
     assistantPreviewRevision += 1;
     pendingAssistantProposal = null;
     pendingAssistantTurnRecord = null;
+    // Nothing is pending any more, so Apply must not look available until the next proposal has
+    // been prepared and validated.
+    $('#applyAssistantProposal').disabled = true;
     $('#assistantProposal').hidden = true;
     $('#assistantClarification').hidden = true;
     $('#assistantEmpty').hidden = false;
@@ -7023,6 +7027,7 @@ async function commitCausalInference() {
         return;
     }
     const validation = await window.engine.validate(JSON.stringify(prepared.document));
+    if (validation.cancelled) return;
     if (!validation.available || !validation.report.valid) {
         status.className = 'equationDiagnostics';
         status.textContent = validation.available
@@ -7527,6 +7532,7 @@ async function commitParameterTuning() {
         return;
     }
     const validation = await window.engine.validate(JSON.stringify(prepared.document));
+    if (validation.cancelled) return;
     if (!validation.available || !validation.report.valid) {
         status.textContent = validation.available
             ? (validation.report.issues.filter((issue) => issue.severity === 'error').map((issue) => issue.message).join(' ')
@@ -10461,6 +10467,8 @@ function deleteSelected() {
         applyDeleted(true);
         recordHistory({ undo: () => applyDeleted(false), redo: () => applyDeleted(true) });
         clearSelection();
+        // An editor left open on a deleted node would show stale fields that no longer edit anything.
+        ['#nodeEditor', '#sourceTermEditor'].forEach((selector) => $(selector).classList.add('hidden'));
     } else if (selectedRelationship) {
         const id = selectedRelationship.id;
         setRelationshipVisibility(id, false);
@@ -10469,6 +10477,7 @@ function deleteSelected() {
             redo: () => setRelationshipVisibility(id, false)
         });
         selectedRelationship = null;
+        $('#edgeEditor').classList.add('hidden');
     }
 }
 

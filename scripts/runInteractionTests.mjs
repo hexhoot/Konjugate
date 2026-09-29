@@ -5,12 +5,14 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { installInteractionAddons } from './interactionAddons.mjs';
 
 const environment = { ...process.env };
 delete environment.ELECTRON_RUN_AS_NODE;
 
 const userDataDirectory = await mkdtemp(join(tmpdir(), 'konjugate-interaction-'));
 environment.KONJUGATE_INTERACTION_USER_DATA = userDataDirectory;
+environment.KONJUGATE_INTERACTION_INSTALLED_ADDONS = (await installInteractionAddons(process.cwd(), userDataDirectory)).join(',');
 const child = spawn(electronPath, ['.', '--interaction-test', '--disable-gpu', '--enable-unsafe-swiftshader'], {
     cwd: process.cwd(),
     env: environment,

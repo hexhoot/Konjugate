@@ -14,6 +14,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rootDirectory } from './developmentEnvironment.mjs';
+import { installInteractionAddons } from './interactionAddons.mjs';
 import { packagedAppExecutable } from './packagedPaths.mjs';
 
 const executable = packagedAppExecutable(rootDirectory);
@@ -26,6 +27,7 @@ delete environment.ELECTRON_RUN_AS_NODE;
 
 const userDataDirectory = await mkdtemp(join(tmpdir(), 'konjugate-packaged-interaction-'));
 environment.KONJUGATE_INTERACTION_USER_DATA = userDataDirectory;
+environment.KONJUGATE_INTERACTION_INSTALLED_ADDONS = (await installInteractionAddons(rootDirectory, userDataDirectory)).join(',');
 const child = spawn(executable, ['--interaction-test', '--disable-gpu', '--enable-unsafe-swiftshader'], {
     cwd: rootDirectory,
     env: environment,

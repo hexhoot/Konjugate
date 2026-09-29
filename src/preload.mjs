@@ -146,7 +146,7 @@ contextBridge.exposeInMainWorld('modelClipboard', {
 
 contextBridge.exposeInMainWorld('engine', {
     capabilities: () => ipcRenderer.invoke('engineCapabilities'),
-    validate: (content) => ipcRenderer.invoke('engineValidate', content),
+    validate: (content, options = {}) => ipcRenderer.invoke('engineValidate', content, options),
     infer: (csv, config) => ipcRenderer.invoke('engineInfer', csv, config),
     fit: (content, csv, config) => ipcRenderer.invoke('engineFit', content, csv, config),
     checkSubstepConvergence: (content, runConfiguration, nodeIds) => ipcRenderer.invoke('engineCheckSubstepConvergence', content, runConfiguration, nodeIds),

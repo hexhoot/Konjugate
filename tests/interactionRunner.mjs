@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { mulberry32, gaussianFrom, buildThermalSystemCsv } from './fixtures/thermalSystemCsv.mjs';
 import { unzipSync } from 'fflate';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { encodeProjectFile } from '../src/projectFile.mjs';
+import { decodeProjectFile, encodeProjectFile } from '../src/projectFile.mjs';
 
 // These 10 primitives, and every scenario below, operate on a "handle" -- a driver-produced
 // object wrapping either a live Electron BrowserWindow (tests/drivers/electronWindowDriver.mjs)
@@ -59,6 +59,12 @@ async function waitFor(window, expression, message, timeout = 5000) {
     const visibleError = await evaluate(window, `document.querySelector('#assistantError:not([hidden])')?.textContent ?? ''`);
     const assistantStatus = await evaluate(window, `document.querySelector('#assistantProposalStatus')?.textContent ?? ''`);
     throw new Error(`${message}${visibleError ? ` ${visibleError}` : ''}${assistantStatus ? ` Status: ${assistantStatus}` : ''}`);
+}
+
+// Closing a window mid-validation cancels its engine process; let validation settle first.
+async function closeWhenValidated(window, timeout = 10000) {
+    await waitFor(window, `!document.querySelector('#validationSummary')?.classList.contains('pending')`, 'Model validation did not settle before closing the window.', timeout);
+    await window.close();
 }
 
 // A single requestAnimationFrame apart is not a reliable "stopped moving" signal here: the main
@@ -212,6 +218,10 @@ function sharedParameterTestProject({ withSourceTerm = false } = {}) {
 
 export async function runInteractionTests(driver) {
     const window = driver.mainHandle;
+    // Add-ons that live in their own repositories are installed per run by the runner scripts (see
+    // scripts/interactionAddons.mjs); a test needing one that wasn't found is skipped, not failed.
+    const installedAddons = new Set((process.env.KONJUGATE_INTERACTION_INSTALLED_ADDONS ?? '').split(',').filter(Boolean));
+    const addonMissing = (addonId, repository) => !installedAddons.has(addonId) && `needs the ${addonId} add-on -- build ../${repository} (npm run build) or set KONJUGATE_INTERACTION_ADDONS`;
     let passedCount = 0;
     let skippedCount = 0;
     const run = async (name, task, { skip } = {}) => {
@@ -263,7 +273,7 @@ export async function runInteractionTests(driver) {
         assert.equal(await evaluate(guideWindow, `[...document.querySelectorAll('.equation [style]')].every((element) => element.style.length > 0)`), true);
         assert.equal(await evaluate(guideWindow, `document.querySelector('.equation').scrollWidth <= document.querySelector('.equation').clientWidth`), true);
         assert.equal(await evaluate(window, `document.querySelector('#exampleGuideButton').hidden`), false);
-        await guideWindow.close();
+        await closeWhenValidated(guideWindow);
         await waitFor(window, `!document.querySelector('#exampleGuideButton').hidden`, 'Example guide reopen control disappeared.');
         const beforeReopen = driver.allHandles();
         await evaluate(window, `document.querySelector('#exampleGuideButton').click()`);
@@ -297,12 +307,13 @@ export async function runInteractionTests(driver) {
             await evaluate(window, `document.querySelector('#exportCodeParallelism').value = '${parallelism}'`);
             const { bytes } = await driver.captureExport(async () => {
                 await evaluate(window, `document.querySelector('#exportCodeSubmit').click()`);
+                // The dialog closes once the file is fully written; reading earlier can see a partial file.
+                await waitFor(window, `!document.querySelector('#exportCodeDialog').open`, 'Export dialog should close after a successful export.', 15000);
             }, { extension });
             const exportedSource = bytes.toString('utf8');
             assert.ok(exportedSource, `Export (${language}/${parallelism}) did not write a file.`);
             assert.match(exportedSource, /time \(s\)/);
             assert.ok(exportedSource.includes(expectedFragment), `Exported (${language}/${parallelism}) source is missing an expected "${expectedFragment}" fragment.`);
-            assert.equal(await evaluate(window, `document.querySelector('#exportCodeDialog').open`), false, 'Export dialog should close after a successful export.');
         }
     });
 
@@ -317,6 +328,7 @@ export async function runInteractionTests(driver) {
             'The Execution row has no meaning for an FMU export and should be hidden.');
         const { bytes: exportedBuffer } = await driver.captureExport(async () => {
             await evaluate(window, `document.querySelector('#exportCodeSubmit').click()`);
+            await waitFor(window, `!document.querySelector('#exportCodeDialog').open`, 'Export dialog should close after the FMU is written.', 60000);
         }, { extension: 'fmu', maxAttempts: 400 });
         assert.ok(exportedBuffer, 'FMU export did not write a file.');
         const entries = unzipSync(exportedBuffer);
@@ -339,31 +351,42 @@ export async function runInteractionTests(driver) {
         // (the first window has an example loaded by this point in the suite).
         assert.equal(await evaluate(second, `document.querySelectorAll('.node-label-container').length`), 0);
 
-        // An auxiliary window (Welcome) opened from each project window stays scoped to its own
-        // parent -- handle.parent() is a free, exact check since auxiliaryWindowPresentation
-        // already sets `parent:` on every auxiliary window.
-        const findWelcomeWindowFor = async (parent) => {
+        // Each project window gets its own auxiliary (Welcome) window. Auxiliary windows are not
+        // parented to their project window (so either can be brought to the front without
+        // minimizing the other), so each one is identified as the window that became a Welcome
+        // window after its own openWelcome() call -- a project window reuses its guide window, so
+        // that may be an existing window (e.g. an example guide opened earlier), not a new one.
+        const welcomeHandles = async () => {
+            const handles = [];
+            for (const handle of driver.allHandles()) {
+                if (!(await handle.isDestroyed()) && (await handle.title()).includes('Welcome')) handles.push(handle);
+            }
+            return handles;
+        };
+        const openWelcomeFrom = async (projectWindow) => {
+            const existing = await welcomeHandles();
+            await evaluate(projectWindow, `window.applicationInfo.openWelcome()`);
             const startedAt = Date.now();
-            while (Date.now() - startedAt < 5000) {
-                for (const candidate of driver.allHandles()) {
-                    if (await candidate.parent() === parent && (await candidate.title()).includes('Welcome')) return candidate;
+            while (Date.now() - startedAt < 10000) {
+                const opened = (await welcomeHandles()).find((handle) => !existing.includes(handle));
+                if (opened) {
+                    assert.equal(await opened.parent(), null, 'Auxiliary windows must not be parented to their project window.');
+                    return opened;
                 }
                 await new Promise((resolve) => setTimeout(resolve, 50));
             }
-            throw new Error('Welcome window did not open for its project window.');
+            throw new Error('openWelcome() did not open a Welcome window for its project window.');
         };
-        await evaluate(window, `window.applicationInfo.openWelcome()`);
-        await evaluate(second, `window.applicationInfo.openWelcome()`);
-        const welcomeFromFirst = await findWelcomeWindowFor(window);
-        const welcomeFromSecond = await findWelcomeWindowFor(second);
+        const welcomeFromFirst = await openWelcomeFrom(window);
+        const welcomeFromSecond = await openWelcomeFrom(second);
         assert.notEqual(welcomeFromFirst, welcomeFromSecond, 'Each project window should get its own Welcome window.');
-        await welcomeFromFirst.close();
+        await closeWhenValidated(welcomeFromFirst);
         await new Promise((resolve) => setTimeout(resolve, 200));
         assert.ok(!(await welcomeFromSecond.isDestroyed()), "Closing window A's Welcome window must not affect window B's.");
-        await welcomeFromSecond.close();
+        await closeWhenValidated(welcomeFromSecond);
 
         // Closing a project window must not quit the app or affect the other window.
-        await second.close();
+        await closeWhenValidated(second);
         await new Promise((resolve) => setTimeout(resolve, 200));
         assert.ok(!(await window.isDestroyed()), 'Closing the second window destroyed the first.');
         assert.equal(await evaluate(window, `1 + 1`), 2, 'The first window is no longer responsive after the second closed.');
@@ -387,14 +410,14 @@ export async function runInteractionTests(driver) {
         await driver.simulateOsFileOpen(examplePath);
         await new Promise((resolve) => setTimeout(resolve, 300));
         assert.deepEqual(driver.allHandles(), beforeSecondOpen, 'Opening the same file again should focus the existing window, not open a duplicate.');
-        await opened.close();
+        await closeWhenValidated(opened);
 
         const beforeBadOpen = driver.allHandles();
         await driver.simulateOsFileOpen(join(process.cwd(), 'examples', 'doesNotExist.kjt'));
         const failedWindow = await driver.waitForNewHandle(beforeBadOpen);
         assert.ok(failedWindow, 'An OS-initiated open of a missing file did not open a window at all.');
         await waitFor(failedWindow, `document.querySelector('#statusText').textContent.startsWith('Load failed')`, 'A missing file did not surface a load-failed status instead of crashing.');
-        await failedWindow.close();
+        await closeWhenValidated(failedWindow);
     }, { skip: !driver.capabilities.osFileOpen && 'OS-initiated file open has no web-edition equivalent' });
 
     await run('validation summary reports and displays a valid model', async () => {
@@ -405,6 +428,19 @@ export async function runInteractionTests(driver) {
         assert.equal(await evaluate(window, `document.querySelector('#validationPanelTitle').textContent`), 'No issues');
         await evaluate(window, `document.querySelector('#closeValidationPanel').click()`);
     });
+
+    await run('a newer model validation cancels the one it supersedes', async () => {
+        const content = await decodeProjectFile(await readFile(join(process.cwd(), 'examples', 'heatedWaterTank.kjt')));
+        const outcomes = await evaluate(window, `(async () => {
+            const content = ${JSON.stringify(content)};
+            const first = window.engine.validate(content, { supersede: 'interactionTest' });
+            const second = window.engine.validate(content, { supersede: 'interactionTest' });
+            return Promise.all([first, second]);
+        })()`);
+        assert.deepEqual(outcomes[0], { cancelled: true }, 'The superseded validation should report cancellation instead of a result.');
+        assert.equal(outcomes[1].available, true);
+        assert.equal(typeof outcomes[1].report.valid, 'boolean');
+    }, { skip: !driver.capabilities.cancellableValidation && 'The web engine cannot cancel a validation in progress' });
 
     await run('local assistant prepares, validates and applies one undoable transaction', async () => {
         await evaluate(window, `window.dispatchEvent(new Event('resize')); document.querySelector('#assistantButton').click(); (() => {
@@ -813,7 +849,7 @@ export async function runInteractionTests(driver) {
 
         await evaluate(analysisWindow, `(() => { const timeline = document.querySelector('#timeline'); timeline.value = '0'; timeline.dispatchEvent(new Event('input', { bubbles: true })); })()`);
         await waitFor(window, `document.querySelector('#resultCurrentTime').value === '0 s'`, 'Visualizer seek did not synchronize to the project window.');
-    }, { skip: !driver.capabilities.addons && 'the Results Analysis add-on has no web-edition equivalent' });
+    }, { skip: (!driver.capabilities.addons && 'the Results Analysis add-on has no web-edition equivalent') || addonMissing('konjugate.resultPlotViewer', 'konjugate-resultplotviewer') });
 
     await run('closing results clears the main window and any add-on it opened', async () => {
         await evaluate(window, `document.querySelector('[data-node-tab="model"]').click()`);
@@ -830,7 +866,7 @@ export async function runInteractionTests(driver) {
             }
             assert.equal(await analysisHandle.isDestroyed(), true);
         }
-        assert.equal(await evaluate(window, `document.querySelector('#resultTransport').hidden`), true);
+        await waitFor(window, `document.querySelector('#resultTransport').hidden`, 'Confirming did not close the results.');
         assert.equal(await evaluate(window, `document.querySelector('[data-detail="nodes"]').classList.contains('active')`), false);
         assert.equal(await evaluate(window, `document.querySelector('#editNodeName').disabled || document.querySelector('#nodeModelActions').hidden`), false);
         assert.equal(await evaluate(window, `document.querySelector('#canvas').classList.contains('resultModeLocked')`), false);
@@ -2464,12 +2500,12 @@ export async function runInteractionTests(driver) {
         });
         assert.deepEqual(consoleMessages.filter((message) => /error|uncaught|exception/i.test(message)), []);
 
-        await poseWindow.close();
+        await closeWhenValidated(poseWindow);
         for (let attempt = 0; attempt < 100 && !(await poseWindow.isDestroyed()); attempt += 1) {
             await new Promise((resolve) => setTimeout(resolve, 25));
         }
         assert.equal(await poseWindow.isDestroyed(), true);
-    }, { skip: !driver.capabilities.addons && 'the Pose Visualizer add-on has no web-edition equivalent' });
+    }, { skip: (!driver.capabilities.addons && 'the Pose Visualizer add-on has no web-edition equivalent') || addonMissing('konjugate.poseVisualizer', 'konjugate-posevisualizer') });
 
     await run('closing results and removing the free-body nodes cleans up the pose scenario', async () => {
         await evaluate(window, `document.querySelector('#closeResults').click()`);
@@ -3025,7 +3061,10 @@ export async function runInteractionTests(driver) {
         await waitFor(window, `Boolean(${nodeLabel('Import test A')})`, 'The label for "Import test A" did not re-render after undo.');
         await evaluate(window, `document.querySelector('[data-tool="select"]').click()`);
         await clickElement(window, nodeLabel('Import test A'));
+        await waitFor(window, `document.querySelector('#editNodeName').value === 'Import test A'`, 'Clicking "Import test A" did not open its node editor.');
         await evaluate(window, `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))`);
+        assert.equal(await evaluate(window, `document.querySelector('#nodeEditor').classList.contains('hidden')`), true,
+            'Deleting a node should close the editor that was open on it.');
     });
 
     await run('causal inference with curvature allowed recovers a quadratic edge equation', async () => {
@@ -3101,7 +3140,7 @@ export async function runInteractionTests(driver) {
         const nodeLabel = (name) => `[...document.querySelectorAll('.objectLabel')].find((label) => label.textContent.includes(${JSON.stringify(name)}) && !label.textContent.includes('copy'))`;
         await waitFor(window, `Boolean(${nodeLabel('columnP')})`, 'The label for the newly-created "columnP" node did not render.');
         await clickElement(window, nodeLabel('columnP'));
-        await waitFor(window, `!document.querySelector('#nodeEditor').classList.contains('hidden')`, 'Clicking the new columnP node did not open the node editor.');
+        await waitFor(window, `!document.querySelector('#nodeEditor').classList.contains('hidden') && document.querySelector('#editNodeName').value === 'columnP'`, 'Clicking the new columnP node did not open its node editor.');
         assert.equal(await evaluate(window, `document.querySelector('#editNodeShape').value`), 'sphere',
             'A node created by causal inference should default to a sphere shape.');
         await evaluate(window, `document.querySelector('#nodeEditor [data-close-card]').click()`);
@@ -3495,11 +3534,11 @@ export async function runInteractionTests(driver) {
         assert.ok(lateTraceLength > earlyTraceLength,
             `Expected the revealed scatter trail to grow as the Analysis timeline is dragged forward once the run has completed (near t=0: ${earlyTraceLength} points, near the end: ${lateTraceLength} points).`);
 
-        await diagnosticWindow.close();
+        await closeWhenValidated(diagnosticWindow);
         for (let attempt = 0; attempt < 100 && !(await diagnosticWindow.isDestroyed()); attempt += 1) {
             await new Promise((resolve) => setTimeout(resolve, 25));
         }
-    }, { skip: !driver.capabilities.multiWindow && 'duplicates coverage #5/#15 already provide on the web driver; the addon-specific redraw-gating behavior itself has no web-edition equivalent' });
+    }, { skip: (!driver.capabilities.multiWindow && 'duplicates coverage #5/#15 already provide on the web driver; the addon-specific redraw-gating behavior itself has no web-edition equivalent') || addonMissing('konjugate.resultPlotViewer', 'konjugate-resultplotviewer') });
 
     await run('source terms expose parameters to equations and programmable bindings', async () => {
         await evaluate(window, `[...document.querySelectorAll('.objectLabel')].find((label) => label.textContent.includes('Enclosed air')).click()`);
@@ -3625,7 +3664,7 @@ export async function runInteractionTests(driver) {
         const convergenceResultText = await evaluate(diagnosticWindow, `document.querySelector('.stabilityConvergenceResult').textContent`);
         assert.doesNotMatch(convergenceResultText, /undefined|NaN/, 'The convergence result should never leak an unresolved value.');
 
-        await diagnosticWindow.close();
+        await closeWhenValidated(diagnosticWindow);
     }, { skip: !driver.capabilities.multiWindow && 'opens its own isolated diagnostic window; no web-edition equivalent' });
 
     await run('clicking an attributed instability warning jumps straight to the offending parameter', async () => {
@@ -3699,7 +3738,7 @@ export async function runInteractionTests(driver) {
             await evaluate(diagnosticWindow, `document.activeElement.closest('.editorParameterRow').querySelector('[data-field="symbol"]').value`),
             'decayRate', "The focused row should be decayRate's own row, not some other parameter.");
 
-        await diagnosticWindow.close();
+        await closeWhenValidated(diagnosticWindow);
     }, { skip: !driver.capabilities.multiWindow && 'opens its own isolated diagnostic window; no web-edition equivalent' });
 
     await run('the stability-monitoring toggle suppresses during-run findings without disabling the post-run check', async () => {
@@ -3766,8 +3805,119 @@ export async function runInteractionTests(driver) {
         assert.match(listText, /grew substantially across the completed run|classic Explicit Euler instability signature/,
             'The post-run fingerprint check should still independently catch the same instability.');
 
-        await diagnosticWindow.close();
+        await closeWhenValidated(diagnosticWindow);
     }, { skip: !driver.capabilities.multiWindow && 'opens its own isolated diagnostic window; no web-edition equivalent' });
+
+    await run('equations use simulation time t and piecewise cases, from the editors through a run', async () => {
+        // Heater: energy' = 2 while 0.95 <= t < 2.95, else 0 (a source term written with t).
+        // Room: fed by the Warm room edge, which this test rewrites to 1 once t >= 1.95.
+        // At dt = 0.1 over 5 s that gives energy = 2 * 2 = 4 and heat = 1 * 3 = 3.
+        const time = { kind: 'time', symbol: 't' };
+        const heaterLatex = String.raw`\begin{cases} 2 & 0.95 \le t < 2.95 \\ 0 & \text{otherwise} \end{cases}`;
+        const project = {
+            format: 'konjugate', version: 1, metadata: { units: 'SI' },
+            runConfigurations: [{ id: 50, name: 'Default', globalTimeStep: 0.1, outputInterval: 0.1 }], activeRunConfigurationId: 50,
+            nodes: [
+                {
+                    id: 1, name: 'Heater', position: [-4, 0, 0], appearance: { type: 'primitive', shape: 'box', color: '#888888' },
+                    states: [{ id: 2, name: 'Energy', symbol: 'energy', initialValue: 0 }],
+                    sourceTerms: [{
+                        id: 3, state: 'energy', expression: heaterLatex,
+                        expressionModel: {
+                            latex: heaterLatex, output: { stateId: 2 },
+                            bindings: [{ kind: 'state', nodeId: 1, stateId: 2, symbol: 'energy' }, time],
+                            mathJson: ['Which', ['And', ['LessEqual', 0.95, 't'], ['Less', 't', 2.95]], 2, 'True', 0]
+                        }
+                    }]
+                },
+                {
+                    id: 4, name: 'Room', position: [4, 0, 0], appearance: { type: 'primitive', shape: 'box', color: '#888888' },
+                    states: [{ id: 5, name: 'Heat', symbol: 'heat', initialValue: 0 }], sourceTerms: []
+                }
+            ],
+            edges: [{
+                id: 6, name: 'Warm room', source: { nodeId: 1, stateId: 2 }, target: { nodeId: 4, stateId: 5 }, directionality: 'directed',
+                equation: '0',
+                equationModel: {
+                    latex: '0', output: { role: 'target', stateId: 5 },
+                    bindings: [
+                        { kind: 'state', role: 'source', nodeId: 1, stateId: 2, symbol: 'sourceEnergy' },
+                        { kind: 'state', role: 'target', nodeId: 4, stateId: 5, symbol: 'targetHeat' },
+                        time
+                    ],
+                    mathJson: 0
+                },
+                parameters: [], appearance: { color: '#888888', offset: 0 }
+            }]
+        };
+        const directory = await mkdtemp(join(tmpdir(), 'konjugate-time-'));
+        const projectPath = join(directory, 'timeAndCases.kjt');
+        await writeFile(projectPath, await encodeProjectFile(JSON.stringify(project)));
+        const before = driver.allHandles();
+        await driver.simulateOsFileOpen(projectPath);
+        const opened = await driver.waitForNewHandle(before);
+        await waitFor(opened, `document.querySelectorAll('.node-label-container').length === 2`, 'The time project did not load.');
+
+        const setEdgeEquation = (latex) => evaluate(opened, `(() => {
+            const field = document.querySelector('#editEdgeMathField');
+            field.setValue(${JSON.stringify(latex)});
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+        })()`);
+        const diagnostics = () => evaluate(opened, `document.querySelector('#equationDiagnostics').textContent`);
+
+        const point = await evaluate(opened, `window.__relationshipScreenPoint('Warm room')`);
+        assert.ok(point, 'Could not locate the Warm room edge on screen.');
+        await opened.mouseMove(point);
+        await opened.mouseDown(point, { button: 'left', clickCount: 1 });
+        await opened.mouseUp(point, { button: 'left', clickCount: 1 });
+        await waitFor(opened, `document.querySelector('#editEdgeName').value === 'Warm room'`, 'The edge editor did not open.');
+
+        // The time chip is offered alongside the state chips and inserts t.
+        const timeChip = `[...document.querySelectorAll('#editStateReferenceChips button')].find((button) => button.textContent === 't (time)')`;
+        assert.ok(await evaluate(opened, `Boolean(${timeChip})`), 'The edge editor must offer a t (time) chip.');
+        assert.equal(await evaluate(opened, `${timeChip}.title`), 'Insert simulation time (seconds)');
+        await setEdgeEquation('');
+        await evaluate(opened, `${timeChip}.click()`);
+        await waitFor(opened, `document.querySelector('#editEdgeMathField').value.trim() === 't'`, 'Clicking the time chip did not insert t.');
+
+        // Editor-side checks for cases and comparisons.
+        await setEdgeEquation(String.raw`\begin{cases} 1 & t \ge 1.95 \end{cases}`);
+        assert.match(await diagnostics(), /otherwise/, 'A cases expression without an otherwise branch must be rejected.');
+        await setEdgeEquation('t > 1');
+        assert.match(await diagnostics(), /condition of a cases expression/, 'A bare comparison must be rejected.');
+        await setEdgeEquation(String.raw`\begin{cases} 1 & t \ge 1.95 \\ 0 & \text{otherwise} \end{cases}`);
+        assert.equal(await diagnostics(), 'Valid expression · MathJSON ready');
+        await waitFor(opened, `document.querySelector('#validationSummary').dataset.validationSource === 'engine' && !document.querySelector('#validationSummary').classList.contains('error')`,
+            'The engine must accept a cases expression using t.');
+
+        // Providers get time from their evaluation context, so t is not offered as a provider binding.
+        await evaluate(opened, `(() => { const select = document.querySelector('#editEdgeImplementationKind'); select.value = 'cpp'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+        await evaluate(opened, `document.querySelector('#editAddProviderBinding').click()`);
+        const referenceOptions = await evaluate(opened, `[...document.querySelectorAll('#edgeEditor .providerBindingRow [data-field="reference"] option')].map((option) => option.textContent)`);
+        assert.ok(referenceOptions.length > 0, 'The provider binding row must list references.');
+        assert.ok(!referenceOptions.some((label) => label.includes('time')), `Provider bindings must not offer t (got ${referenceOptions.join(', ')}).`);
+        await evaluate(opened, `(() => { const select = document.querySelector('#editEdgeImplementationKind'); select.value = 'equation'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+        await waitFor(opened, `!document.querySelector('#editEdgeMathField').hidden || !document.querySelector('#editEdgeEquation').hidden`, 'The edge editor did not return to equation mode.');
+        await setEdgeEquation(String.raw`\begin{cases} 1 & t \ge 1.95 \\ 0 & \text{otherwise} \end{cases}`);
+        assert.equal(await diagnostics(), 'Valid expression · MathJSON ready');
+        await evaluate(opened, `document.querySelector('#edgeEditor [data-close-card]').click()`);
+
+        // The source-term editor offers the same chip, and the loaded cases-on-t term is valid.
+        await evaluate(opened, `[...document.querySelectorAll('.objectLabel')].find((label) => label.textContent.includes('Heater')).click()`);
+        await evaluate(opened, `document.querySelector('.sourceTermOpen').click()`);
+        await waitFor(opened, `[...document.querySelectorAll('#termStateReferenceChips button')].some((button) => button.textContent === 't (time)')`, 'The source-term editor must offer a t (time) chip.');
+        assert.equal(await evaluate(opened, `document.querySelector('#termEquationDiagnostics').textContent`), 'Valid expression · MathJSON ready');
+
+        // Run and check both time-dependent rates switched where they should.
+        await evaluate(opened, `document.querySelector('#runButton').click()`);
+        await evaluate(opened, `(() => { document.querySelector('#runTargetTime').value = '5'; document.querySelector('#startRun').click(); })()`);
+        await waitFor(opened, `document.querySelector('.resultMode b').textContent === 'Results'`, 'The run did not complete.', 15000);
+        await waitFor(opened, `Number(document.querySelector('#resultTimeline').max) === 5 && Number(document.querySelector('#resultTimeline').value) === 5`, 'The results did not load to the end of the run.', 15000);
+        const finalValue = (nodeId) => evaluate(opened, `Number.parseFloat(document.querySelector('.node-label-container[data-node="${nodeId}"] dd').textContent)`);
+        assert.ok(Math.abs(await finalValue(1) - 4) < 1e-6, `Heater energy should be 4 (got ${await finalValue(1)}).`);
+        assert.ok(Math.abs(await finalValue(4) - 3) < 1e-6, `Room heat should be 3 (got ${await finalValue(4)}).`);
+        await closeWhenValidated(opened);
+    }, { skip: !driver.capabilities.multiWindow && 'opens its own project window through an OS-style file open; no web-edition equivalent' });
 
     await run('a parameter linked to a shared parameter edits and unlinks through the edge editor', async () => {
         // Two edges link one parameter to a project-level shared parameter: the linked row shows the
@@ -3803,7 +3953,7 @@ export async function runInteractionTests(driver) {
         await evaluate(opened, `(() => { const select = ${row}.querySelector('[data-shared-select]'); select.value = ''; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
         await waitFor(opened, `${row}.querySelector('[data-shared-select]').value === ''`, 'Unlinking did not take effect.');
         assert.equal(await evaluate(opened, `${row}.querySelector('[data-field="value"]').value`), '3', 'Unlinking keeps the value in effect as the parameter\'s own.');
-        await opened.close();
+        await closeWhenValidated(opened);
     }, { skip: !driver.capabilities.multiWindow && 'opens its own project window through an OS-style file open; no web-edition equivalent' });
 
     await run('the parameters table lists shared and ordinary parameters, edits inline, and jumps to owners', async () => {
@@ -3884,7 +4034,7 @@ export async function runInteractionTests(driver) {
         await waitFor(opened, `${termRow}.querySelector('[data-shared-select]').value === ''`, 'Unlinking the source-term parameter did not take effect.');
         assert.match(await evaluate(opened, `document.querySelector('#parametersSummary').textContent`), /· 1 shared/);
         assert.match(await evaluate(opened, `document.querySelector('#parametersBody tr.sharedRow').textContent`), /2 uses/, 'Unlinking must drop the source term from the shared parameter\'s uses.');
-        await opened.close();
+        await closeWhenValidated(opened);
     }, { skip: !driver.capabilities.multiWindow && 'opens its own project window through an OS-style file open; no web-edition equivalent' });
 
     await run('a component bundle wires several edges among the selected nodes with a shared parameter, as one undoable step', async () => {
@@ -3933,7 +4083,7 @@ export async function runInteractionTests(driver) {
         await evaluate(bundleWindow, `document.querySelector('[data-action="select-all"]').click()`);
         await evaluate(bundleWindow, `document.querySelector('[data-template-id="batteryMotorDrive"]').click()`);
         assert.match(await evaluate(bundleWindow, `document.querySelector('#componentLibraryHint').textContent`), /Select 3 nodes first/);
-        await bundleWindow.close();
+        await closeWhenValidated(bundleWindow);
     }, { skip: !driver.capabilities.multiWindow && 'opens its own isolated window; no web-edition equivalent' });
 
     await run('a plugin-contributed example appears in the Examples dialog and loads as an unsaved copy', async () => {
@@ -3975,7 +4125,7 @@ export async function runInteractionTests(driver) {
         await waitFor(exampleWindow, `document.querySelector('.documentTitle').textContent === 'pluginTank'`, 'The plugin example did not load.');
         assert.equal(await evaluate(exampleWindow, `document.querySelectorAll('.node-label-container').length`), 1);
         assert.match(await evaluate(exampleWindow, `document.querySelector('#statusText').textContent`), /unsaved copy/i);
-        await exampleWindow.close();
+        await closeWhenValidated(exampleWindow);
     }, { skip: !driver.capabilities.multiWindow && 'opens its own isolated window; a plugin directory is written to the desktop userData' });
 
     await run('label detail cycles compact, expanded and hidden, keeping the selected label', async () => {
@@ -4017,7 +4167,7 @@ export async function runInteractionTests(driver) {
         await evaluate(crowded, `${nodesButton}.click()`);
         assert.equal(await evaluate(crowded, `${nodesButton}.dataset.mode`), 'compact');
         assert.equal(await evaluate(crowded, visibleLabels), 16);
-        await crowded.close();
+        await closeWhenValidated(crowded);
     }, { skip: !driver.capabilities.multiWindow && 'opens its own project window through an OS-style file open; no web-edition equivalent' });
 
     await run('opening a model with hundreds of relationships starts with relationship labels hidden', async () => {
@@ -4041,7 +4191,7 @@ export async function runInteractionTests(driver) {
         // The user can bring them back with one more cycle.
         await evaluate(largeWindow, `document.querySelector('[data-detail="edges"]').click()`);
         assert.equal(await evaluate(largeWindow, `document.querySelector('[data-detail="edges"]').dataset.mode`), 'compact');
-        await largeWindow.close();
+        await closeWhenValidated(largeWindow);
     }, { skip: !driver.capabilities.multiWindow && 'opens its own project window through an OS-style file open; no web-edition equivalent' });
 
     console.log(`Interaction tests: ${passedCount} passed, ${skippedCount} skipped, ${passedCount + skippedCount} total`);
