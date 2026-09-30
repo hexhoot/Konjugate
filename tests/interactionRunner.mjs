@@ -4086,6 +4086,61 @@ export async function runInteractionTests(driver) {
         await closeWhenValidated(bundleWindow);
     }, { skip: !driver.capabilities.multiWindow && 'opens its own isolated window; no web-edition equivalent' });
 
+    await run('a node template places source terms with their own and shared parameters, as one undoable step', async () => {
+        const pluginDirectory = join(process.env.KONJUGATE_INTERACTION_USER_DATA, 'packages', 'plugins', 'example.stockpile', '0.1.0');
+        await mkdir(pluginDirectory, { recursive: true });
+        await writeFile(join(pluginDirectory, 'stockpile.json'), JSON.stringify({
+            id: 'stockpile', kind: 'node', name: 'Stockpile', domains: ['showcase'], description: 'A draining stock with an order rule.',
+            states: [{ symbol: 'stock', label: 'Stock', initialValue: 10 }, { symbol: 'orderRate', label: 'Order rate', initialValue: 0 }],
+            sharedParameters: [
+                { key: 'cover', name: 'Cover target', symbol: 'coverTarget', value: 3, scope: 'project' },
+                { key: 'drain', name: 'Drain time', symbol: 'drainTime', value: 2 }
+            ],
+            sourceTerms: [
+                { state: 'stock', expression: '-\\frac{\\mathrm{stock}}{\\mathrm{drainTime}}', parameters: [{ name: 'Drain time', symbol: 'drainTime', shared: 'drain' }] },
+                {
+                    state: 'orderRate', setsValue: true, expression: '\\mathrm{gain} \\cdot (\\mathrm{coverTarget} - \\mathrm{stock})',
+                    parameters: [{ name: 'Gain', symbol: 'gain', value: 0.5 }, { name: 'Cover target', symbol: 'coverTarget', shared: 'cover' }]
+                }
+            ]
+        }));
+        await writeFile(join(pluginDirectory, 'plugin.json'), JSON.stringify({
+            pluginId: 'example.stockpile', name: 'Stockpile', version: '0.1.0', apiVersion: 1, permissions: [],
+            contributes: [{ kind: 'component', componentId: 'stockpile', apiVersion: 1, entry: 'stockpile.json' }]
+        }));
+
+        const before = driver.allHandles();
+        await evaluate(window, `document.querySelector('#newWindowButton').click()`);
+        const stockWindow = await driver.waitForNewHandle(before);
+        await waitFor(stockWindow, `document.querySelector('.documentTitle')`, 'Node template test window did not finish loading.');
+        await evaluate(stockWindow, `document.querySelector('#componentLibraryButton').click()`);
+        await waitFor(stockWindow, `document.querySelector('[data-template-id="stockpile"]')`, 'The plugin node template did not appear in the component library.');
+        await evaluate(stockWindow, `document.querySelector('[data-template-id="stockpile"]').click()`);
+        await evaluate(stockWindow, `document.querySelector('[data-template-id="stockpile"]').click()`);
+        await waitFor(stockWindow, `document.querySelectorAll('.objectLabel').length === 2`, 'The two stockpiles were not placed.');
+
+        const sharedRows = `[...document.querySelectorAll('#parametersBody tr.sharedRow')].map((row) => row.textContent)`;
+        await evaluate(stockWindow, `document.querySelector('#parametersButton').click()`);
+        await waitFor(stockWindow, `!document.querySelector('#parametersPanel').hidden`, 'The parameters panel did not open.');
+        // The project-scoped cover target is shared by both nodes; each node gets its own drain time.
+        const rows = await evaluate(stockWindow, sharedRows);
+        assert.equal(rows.length, 3, `Expected one shared cover target and two drain times, got: ${rows.join(' | ')}`);
+        assert.match(rows.find((row) => row.includes('Cover target')), /2 uses/);
+        assert.equal(rows.filter((row) => row.includes('Drain time') && /1 use/.test(row)).length, 2);
+
+        await waitFor(stockWindow, `document.querySelector('#validationSummary').dataset.validationSource === 'engine'`, 'The placed stockpiles were not validated.', 10000);
+        assert.equal(await evaluate(stockWindow, `document.querySelector('#validationSummary').classList.contains('error')`), false,
+            'The engine should accept template source terms with parameters and an algebraic output.');
+
+        // Undoing the second placement removes its own drain time but keeps the shared cover target.
+        await evaluate(stockWindow, `document.querySelector('#undoButton').click()`);
+        await waitFor(stockWindow, `${sharedRows}.length === 2`, 'Undo did not remove the second stockpile\'s own shared parameter.');
+        assert.match((await evaluate(stockWindow, sharedRows)).find((row) => row.includes('Cover target')), /1 use/);
+        await evaluate(stockWindow, `document.querySelector('#redoButton').click()`);
+        await waitFor(stockWindow, `${sharedRows}.length === 3`, 'Redo did not restore the second stockpile\'s shared parameter.');
+        await closeWhenValidated(stockWindow);
+    }, { skip: !driver.capabilities.multiWindow && 'opens its own isolated window; a plugin directory is written to the desktop userData' });
+
     await run('a plugin-contributed example appears in the Examples dialog and loads as an unsaved copy', async () => {
         // The suite runs with an isolated userData directory (KONJUGATE_INTERACTION_USER_DATA), which is
         // where installed packages live, so a plugin written there is discovered exactly like an installed one.

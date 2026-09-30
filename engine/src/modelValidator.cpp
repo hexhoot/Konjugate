@@ -227,6 +227,21 @@ void validateTypedMathJson(const boost::property_tree::ptree& expression,
     for (std::size_t index = 1; index < items.size(); ++index) validateTypedMathJson(*items[index], symbols, errors, childCondition);
 }
 
+// The symbols an executable expression actually reads. A binding list can name more (the node
+// editor binds every state of a node to each of its source terms), and only these are references.
+void collectMathJsonSymbols(const boost::property_tree::ptree& expression, std::set<std::string>& symbols) {
+    if (expression.empty()) {
+        const auto token = expression.data();
+        if (token != "True" && token != "False" && !numericToken(token)) symbols.insert(token);
+        return;
+    }
+    bool operation = true;
+    for (const auto& item : expression) {
+        if (!operation) collectMathJsonSymbols(item.second, symbols);
+        operation = false;
+    }
+}
+
 void validateMathJson(const boost::property_tree::ptree& expression,
                       const std::set<std::string>& symbols,
                       std::vector<std::string>& errors) {
@@ -524,10 +539,18 @@ ValidationResult validateModel(const boost::property_tree::ptree& document) {
                     if (value(term, "setsValue") == "true") {
                         setsValueStateIds.insert(termOutputStateId);
                         std::vector<std::string> referencedStateIds;
+                        // A provider may read any state it binds; an equation only the ones it uses.
+                        std::optional<std::set<std::string>> usedSymbols;
+                        if (!termProgrammable) {
+                            usedSymbols.emplace();
+                            if (const auto mathJson = term.get_child_optional("expressionModel.mathJson")) collectMathJsonSymbols(*mathJson, *usedSymbols);
+                        }
                         if (const auto bindings = term.get_child_optional(termProgrammable ? "implementation.bindings" : "expressionModel.bindings")) {
                             for (const auto& bindingEntry : *bindings) {
                                 const auto& binding = bindingEntry.second;
-                                if (value(binding, "kind") == "state") referencedStateIds.push_back(value(binding, "stateId"));
+                                if (value(binding, "kind") != "state") continue;
+                                if (usedSymbols && !usedSymbols->contains(value(binding, "symbol"))) continue;
+                                referencedStateIds.push_back(value(binding, "stateId"));
                             }
                         }
                         algebraicCandidates.emplace_back(termOutputStateId, std::move(referencedStateIds));

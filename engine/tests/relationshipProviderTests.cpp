@@ -1205,6 +1205,54 @@ void compileExecutionPlanOrdersDependentAlgebraicTasksCorrectly() {
         "y's task (no dependencies) should be ordered before z's task (which depends on y), regardless of authored order.");
 }
 
+// The node editor binds every one of a node's states to each of its source terms, used or not.
+// y = 2x and z = y + 1 as algebraic terms written that way bind x, y and z each: only the symbols
+// an expression actually uses count as references, so neither refers to itself and they do not
+// form a cycle.
+boost::property_tree::ptree setsValueWithUnusedBindingsProject() {
+    std::istringstream json(R"json({
+        "format": "konjugate", "version": 1,
+        "nodes": [{
+            "id": 1, "name": "Node",
+            "states": [
+                {"id": 11, "name": "X", "symbol": "x", "initialValue": 3},
+                {"id": 12, "name": "Y", "symbol": "y", "initialValue": 0},
+                {"id": 13, "name": "Z", "symbol": "z", "initialValue": 0}
+            ],
+            "sourceTerms": [
+                {
+                    "id": 22, "state": "z", "expression": "y + 1", "setsValue": true,
+                    "expressionModel": {"latex": "y + 1", "output": {"stateId": 13}, "mathJson": ["Add", "y", 1], "bindings": [
+                        {"kind": "state", "stateId": 11, "symbol": "x"}, {"kind": "state", "stateId": 12, "symbol": "y"},
+                        {"kind": "state", "stateId": 13, "symbol": "z"}, {"kind": "time", "symbol": "t"}
+                    ]}
+                },
+                {
+                    "id": 21, "state": "y", "expression": "2 x", "setsValue": true,
+                    "expressionModel": {"latex": "2 x", "output": {"stateId": 12}, "mathJson": ["Multiply", 2, "x"], "bindings": [
+                        {"kind": "state", "stateId": 11, "symbol": "x"}, {"kind": "state", "stateId": 12, "symbol": "y"},
+                        {"kind": "state", "stateId": 13, "symbol": "z"}, {"kind": "time", "symbol": "t"}
+                    ]}
+                }
+            ]
+        }],
+        "edges": []
+    })json");
+    boost::property_tree::ptree project;
+    boost::property_tree::read_json(json, project);
+    return project;
+}
+
+void setsValueSourceTermsOnlyReferenceTheSymbolsTheyUse() {
+    const auto result = konjugate::validateModel(setsValueWithUnusedBindingsProject());
+    require(result.valid, "Algebraic source terms binding (but not using) their own or each other's states were rejected.");
+
+    const auto plan = konjugate::compileExecutionPlan(setsValueWithUnusedBindingsProject());
+    const auto& tasks = plan.nodes.at(0).algebraicTasks;
+    require(tasks.size() == 2 && tasks.front().outputStateId == 12 && tasks.back().outputStateId == 13,
+        "y = 2x should be ordered before z = y + 1, which uses it.");
+}
+
 std::string cppInlineTimeReportingProviderSource() {
     return R"cpp(
 #include <konjugate/relationshipProvider.hpp>
@@ -1334,6 +1382,7 @@ int main() {
     validatorRejectsASetsValueSourceTermReferencingItsOwnState();
     validatorRejectsASetsValueAlgebraicLoop();
     compileExecutionPlanOrdersDependentAlgebraicTasksCorrectly();
+    setsValueSourceTermsOnlyReferenceTheSymbolsTheyUse();
     setsValueProgrammableTaskEvaluatesAtEndOfEachSubstepNotStart();
     providerRuntimeExecutesAProgrammableSourceTermEndToEnd();
 }

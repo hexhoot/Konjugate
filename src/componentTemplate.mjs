@@ -13,6 +13,30 @@ const componentTemplateIdPattern = /^[a-zA-Z][\w-]*$/;
 const validPortSymbols = (port) => port !== undefined && (Array.isArray(port) ? port.length : true) &&
     [port].flat().every((symbol) => componentTemplateIdPattern.test(symbol ?? ''));
 
+// Shared parameters declared once by a template and linked from its parameters by key. Used by
+// bundles (linked from edge parameters) and node templates (linked from source-term parameters).
+function validateSharedParameters(sharedParameters, owner) {
+    const sharedKeys = new Set();
+    const sharedSymbols = new Set();
+    (sharedParameters ?? []).forEach((shared) => {
+        if (!componentTemplateIdPattern.test(shared?.key ?? '') || sharedKeys.has(shared.key)) throw new Error(`A ${owner} shared parameter needs a unique key.`);
+        if (!componentTemplateIdPattern.test(shared.symbol ?? '') || !shared.name) throw new Error(`A ${owner} shared parameter needs a name and symbol.`);
+        if (sharedSymbols.has(shared.symbol)) throw new Error(`A ${owner} shared parameter symbol "${shared.symbol}" is duplicated.`);
+        if (!Number.isFinite(shared.value)) throw new Error(`A ${owner} shared parameter needs a finite value.`);
+        if (shared.mode !== undefined && !['constant', 'live'].includes(shared.mode)) throw new Error(`A ${owner} shared parameter mode must be constant or live.`);
+        if (shared.scope !== undefined && !['instance', 'project'].includes(shared.scope)) throw new Error(`A ${owner} shared parameter scope must be instance or project.`);
+        if (shared.mode === 'live') {
+            const { minimum, maximum, step } = shared.control ?? {};
+            if (![minimum, maximum, step].every(Number.isFinite) || !(minimum < maximum) || !(step > 0) || shared.value < minimum || shared.value > maximum) {
+                throw new Error(`A live ${owner} shared parameter needs a slider control with minimum < maximum, step > 0 and its value within the bounds.`);
+            }
+        }
+        sharedKeys.add(shared.key);
+        sharedSymbols.add(shared.symbol);
+    });
+    return sharedKeys;
+}
+
 // A bundle stamps out several edges at once among N named endpoint nodes, optionally with shared
 // parameters declared once and linked from any of its edges' parameters -- so a physical quantity
 // that several relationships must agree on (a winding resistance, both legs of one lending
@@ -25,24 +49,7 @@ function validateBundleTemplate(template) {
         if (endpointIds.has(endpoint.id)) throw new Error(`A bundle endpoint id "${endpoint.id}" is duplicated.`);
         endpointIds.add(endpoint.id);
     });
-    const sharedKeys = new Set();
-    const sharedSymbols = new Set();
-    (template.sharedParameters ?? []).forEach((shared) => {
-        if (!componentTemplateIdPattern.test(shared?.key ?? '') || sharedKeys.has(shared.key)) throw new Error('A bundle shared parameter needs a unique key.');
-        if (!componentTemplateIdPattern.test(shared.symbol ?? '') || !shared.name) throw new Error('A bundle shared parameter needs a name and symbol.');
-        if (sharedSymbols.has(shared.symbol)) throw new Error(`A bundle shared parameter symbol "${shared.symbol}" is duplicated.`);
-        if (!Number.isFinite(shared.value)) throw new Error('A bundle shared parameter needs a finite value.');
-        if (shared.mode !== undefined && !['constant', 'live'].includes(shared.mode)) throw new Error('A bundle shared parameter mode must be constant or live.');
-        if (shared.scope !== undefined && !['instance', 'project'].includes(shared.scope)) throw new Error('A bundle shared parameter scope must be instance or project.');
-        if (shared.mode === 'live') {
-            const { minimum, maximum, step } = shared.control ?? {};
-            if (![minimum, maximum, step].every(Number.isFinite) || !(minimum < maximum) || !(step > 0) || shared.value < minimum || shared.value > maximum) {
-                throw new Error('A live bundle shared parameter needs a slider control with minimum < maximum, step > 0 and its value within the bounds.');
-            }
-        }
-        sharedKeys.add(shared.key);
-        sharedSymbols.add(shared.symbol);
-    });
+    const sharedKeys = validateSharedParameters(template.sharedParameters, 'bundle');
     if (!Array.isArray(template.edges) || !template.edges.length) throw new Error('A bundle needs at least one edge.');
     template.edges.forEach((edge) => {
         if (!edge?.name) throw new Error('A bundle edge needs a name.');
@@ -90,8 +97,20 @@ export function validateComponentTemplate(template) {
             if (!componentTemplateIdPattern.test(state.symbol ?? '') || !state.label) throw new Error('A node template state needs a label and symbol.');
             stateSymbols.add(state.symbol);
         });
+        const sharedKeys = validateSharedParameters(template.sharedParameters, 'node template');
         (template.sourceTerms ?? []).forEach((term) => {
             if (!stateSymbols.has(term.state) || !term.expression) throw new Error('A node template source term needs a state matching one of its own states and an expression.');
+            if (term.setsValue !== undefined && typeof term.setsValue !== 'boolean') throw new Error(`The source term for "${term.state}" has a setsValue flag that is not a boolean.`);
+            const symbols = new Set();
+            (term.parameters ?? []).forEach((parameter) => {
+                if (!componentTemplateIdPattern.test(parameter?.symbol ?? '') || !parameter.name) throw new Error(`The source term for "${term.state}" has a parameter without a name and symbol.`);
+                if (symbols.has(parameter.symbol) || stateSymbols.has(parameter.symbol)) throw new Error(`The source term for "${term.state}" reuses the symbol "${parameter.symbol}".`);
+                symbols.add(parameter.symbol);
+                if (parameter.shared !== undefined && !sharedKeys.has(parameter.shared)) {
+                    throw new Error(`The source term for "${term.state}" links parameter "${parameter.symbol}" to an undeclared shared parameter "${parameter.shared}".`);
+                }
+                if (parameter.shared === undefined && !Number.isFinite(parameter.value)) throw new Error(`The source term for "${term.state}" needs a finite value for parameter "${parameter.symbol}".`);
+            });
         });
     } else {
         // A port is usually one expected state symbol per role, but an edge whose equation

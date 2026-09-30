@@ -245,6 +245,12 @@ export function buildModel(sourceDocument) {
 }
 
 // Same order as the engine: an algebraic state bound by another algebraic term is computed first.
+function mathJsonSymbols(expression, symbols = new Set()) {
+    if (Array.isArray(expression)) expression.slice(1).forEach((argument) => mathJsonSymbols(argument, symbols));
+    else if (typeof expression === 'string' && !['True', 'False'].includes(expression) && !Number.isFinite(Number(expression))) symbols.add(expression);
+    return symbols;
+}
+
 function orderAlgebraicTasks(plan) {
     const byOutput = new Map(plan.algebraic.map((task) => [task.outputStateId, task]));
     const ordered = [];
@@ -296,7 +302,12 @@ function buildContribution(spec, stateRecord) {
                 : { text: `snapshot[${record.globalIndex}]`, comment: `${record.node.name}.${record.state.name}` });
         }
     }
-    const boundStateIds = (bindings ?? []).filter((binding) => binding.kind === 'state' || binding.kind === undefined).map((binding) => binding.stateId);
+    // A provider may read any state it binds; an equation only the ones it uses (the node editor
+    // binds all of a node's states to each source term).
+    const used = implementation ? null : mathJsonSymbols(mathJson);
+    const boundStateIds = (bindings ?? [])
+        .filter((binding) => (binding.kind === 'state' || binding.kind === undefined) && (!used || used.has(binding[identifierField])))
+        .map((binding) => binding.stateId);
     return { entityLabel, outputStateId, outputLocalIndex, negate, symbols, mathJson, implementation, boundStateIds };
 }
 

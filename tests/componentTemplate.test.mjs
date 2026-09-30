@@ -51,3 +51,40 @@ test('a bundle rejects malformed endpoints, edges and shared parameters', () => 
     rejects((t) => { t.sharedParameters[0].scope = 'galaxy'; }, /scope/);
     rejects((t) => { t.sharedParameters[0].mode = 'live'; }, /slider control/);
 });
+
+const nodeWithTerms = () => ({
+    id: 'stockpile', kind: 'node', name: 'Stockpile', domains: ['logistics'],
+    states: [{ symbol: 'stock', label: 'Stock', initialValue: 10 }, { symbol: 'orderRate', label: 'Order rate', initialValue: 0 }],
+    sharedParameters: [
+        { key: 'cover', name: 'Cover', symbol: 'coverDays', value: 3, scope: 'project' },
+        { key: 'drain', name: 'Drain time', symbol: 'drainDays', value: 2 }
+    ],
+    sourceTerms: [
+        { state: 'stock', expression: '-\\frac{\\mathrm{stock}}{\\mathrm{drainDays}}', parameters: [{ name: 'Drain time', symbol: 'drainDays', shared: 'drain' }] },
+        {
+            state: 'orderRate', setsValue: true, expression: '\\mathrm{gain} \\cdot (\\mathrm{coverDays} - \\mathrm{stock})',
+            parameters: [{ name: 'Gain', symbol: 'gain', value: 0.5 }, { name: 'Cover', symbol: 'coverDays', shared: 'cover' }]
+        }
+    ]
+});
+
+test('a node template can give its source terms parameters, shared parameters and algebraic outputs', () => {
+    const template = nodeWithTerms();
+    assert.deepEqual(validateComponentTemplate(template), template);
+});
+
+test('a node template rejects malformed source-term parameters and shared parameters', () => {
+    const rejects = (mutate, pattern) => {
+        const template = nodeWithTerms();
+        mutate(template);
+        assert.throws(() => validateComponentTemplate(template), pattern);
+    };
+    rejects((t) => { t.sourceTerms[0].parameters[0].shared = 'missing'; }, /undeclared shared parameter/);
+    rejects((t) => { t.sourceTerms[1].parameters[0].value = 'half'; }, /finite value/);
+    rejects((t) => { t.sourceTerms[1].parameters.push({ name: 'Gain again', symbol: 'gain', value: 1 }); }, /reuses the symbol "gain"/);
+    rejects((t) => { t.sourceTerms[1].parameters[0].symbol = 'stock'; }, /reuses the symbol "stock"/);
+    rejects((t) => { delete t.sourceTerms[1].parameters[0].name; }, /without a name and symbol/);
+    rejects((t) => { t.sourceTerms[1].setsValue = 'yes'; }, /not a boolean/);
+    rejects((t) => { t.sharedParameters[1].key = 'cover'; }, /node template shared parameter needs a unique key/);
+    rejects((t) => { t.sharedParameters[0].scope = 'galaxy'; }, /node template shared parameter scope/);
+});

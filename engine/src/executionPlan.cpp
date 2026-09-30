@@ -156,6 +156,26 @@ void bindExpressionSymbols(CompiledExpression& expression, const std::vector<Com
     for (auto& argument : expression.arguments) bindExpressionSymbols(argument, bindings);
 }
 
+bool expressionReadsSymbol(const CompiledExpression& expression, std::size_t symbolIndex) {
+    if (expression.operation == ExpressionOperation::symbol && expression.symbolIndex == symbolIndex) return true;
+    return std::any_of(expression.arguments.begin(), expression.arguments.end(), [&](const auto& argument) {
+        return expressionReadsSymbol(argument, symbolIndex);
+    });
+}
+
+// The local states a task reads: every one a provider binds, but only those an equation uses (the
+// node editor binds all of a node's states to each source term, used or not).
+std::vector<EntityId> localStatesRead(const ContributionTask& task) {
+    std::vector<EntityId> stateIds;
+    for (std::size_t index = 0; index < task.bindings.size(); ++index) {
+        const auto& binding = task.bindings[index];
+        if (binding.source != BindingSource::localState) continue;
+        if (task.implementation == ContributionImplementation::equation && !expressionReadsSymbol(task.expression, index)) continue;
+        stateIds.push_back(binding.valueId);
+    }
+    return stateIds;
+}
+
 void bindTask(ContributionTask& task) {
     for (auto& binding : task.bindings) {
         if (binding.source != BindingSource::parameter) continue;
@@ -334,12 +354,12 @@ ExecutionPlan compileExecutionPlan(const boost::property_tree::ptree& document) 
             for (std::size_t index = 0; index < algebraicCandidates.size(); ++index) {
                 algebraicIndexByStateId[algebraicCandidates[index].outputStateId] = index;
             }
+            std::vector<std::vector<EntityId>> statesRead;
             for (const auto& task : algebraicCandidates) {
-                for (const auto& binding : task.bindings) {
-                    if (binding.source == BindingSource::localState && binding.valueId == task.outputStateId) {
-                        throw std::runtime_error(
-                            "A source term that sets its value directly may not reference its own state.");
-                    }
+                statesRead.push_back(localStatesRead(task));
+                if (std::find(statesRead.back().begin(), statesRead.back().end(), task.outputStateId) != statesRead.back().end()) {
+                    throw std::runtime_error(
+                        "A source term that sets its value directly may not reference its own state.");
                 }
             }
             std::vector<int> visitState(algebraicCandidates.size(), 0); // 0=unvisited, 1=visiting, 2=done
@@ -352,9 +372,8 @@ ExecutionPlan compileExecutionPlan(const boost::property_tree::ptree& document) 
                         "Two or more source terms that set their value directly form a dependency cycle, which has no defined solution.");
                 }
                 visitState[index] = 1;
-                for (const auto& binding : algebraicCandidates[index].bindings) {
-                    if (binding.source != BindingSource::localState) continue;
-                    const auto found = algebraicIndexByStateId.find(binding.valueId);
+                for (const auto stateId : statesRead[index]) {
+                    const auto found = algebraicIndexByStateId.find(stateId);
                     if (found != algebraicIndexByStateId.end()) visit(found->second);
                 }
                 visitState[index] = 2;

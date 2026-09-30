@@ -326,3 +326,32 @@ test('a setsValue source term is assigned before the derivatives, not integrated
         assert.doesNotMatch(source, /derivative\[1\] \+=/, `${kind}: the algebraic state must not be integrated.`);
     }
 });
+
+test('algebraic terms that bind every state of their node are ordered by the states they use', () => {
+    // The node editor binds all of a node's states to each source term, used or not. Only what an
+    // expression reads orders algebraic terms, so z = y + 1 follows y = 2x and nothing is a cycle.
+    const document = baseDocument();
+    const nodeId = id();
+    const [x, y, z] = [id(), id(), id()];
+    const everyState = [[x, 'x'], [y, 'y'], [z, 'z']].map(([stateId, symbol]) => ({ kind: 'state', nodeId, stateId, symbol }));
+    document.nodes.push({
+        id: nodeId, name: 'Node',
+        states: [
+            { id: x, name: 'X', symbol: 'x', initialValue: 3, unit: '' },
+            { id: y, name: 'Y', symbol: 'y', initialValue: 0, unit: '' },
+            { id: z, name: 'Z', symbol: 'z', initialValue: 0, unit: '' }
+        ],
+        sourceTerms: [
+            { id: id(), state: 'z', expression: 'y + 1', setsValue: true,
+                expressionModel: { latex: 'y + 1', bindings: everyState, output: { stateId: z }, mathJson: ['Add', 'y', '1'] } },
+            { id: id(), state: 'y', expression: '2 x', setsValue: true,
+                expressionModel: { latex: '2 x', bindings: everyState, output: { stateId: y }, mathJson: ['Multiply', '2', 'x'] } }
+        ]
+    });
+    for (const kind of ['cpp', 'python']) {
+        const source = generateStandaloneProgram(document, kind);
+        const assign = (index) => source.indexOf(kind === 'python' ? `state[${index}] = algebraic_value` : `state[${index}] = algebraicValue;`);
+        assert.ok(assign(1) > 0 && assign(2) > 0, `${kind}: both algebraic states must be assigned.`);
+        assert.ok(assign(1) < assign(2), `${kind}: y must be computed before z, which uses it.`);
+    }
+});

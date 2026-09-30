@@ -3284,7 +3284,8 @@ function closeComponentLibraryPanel() {
 // creation, selection, status refresh and undo/redo. Callers may still own workflow-specific
 // concerns such as placement, endpoint picking and imported-geometry cleanup, but must not
 // reproduce the actual commit sequence.
-function insertNodeDefinition(definition, { attachCurrentTransform = false, openInspector = true } = {}) {
+// `history` adds to this insertion's undo step whatever else the caller changed alongside it.
+function insertNodeDefinition(definition, { attachCurrentTransform = false, openInspector = true, history = null } = {}) {
     model.nodes.push(definition);
     createNode(definition);
     updateModelStatus();
@@ -3292,8 +3293,8 @@ function insertNodeDefinition(definition, { attachCurrentTransform = false, open
     selectNode(object);
     if (attachCurrentTransform && currentTool in transformPropertyForTool) transformControls.attach(object);
     recordHistory({
-        undo: () => setNodeVisibility(definition.id, false),
-        redo: () => setNodeVisibility(definition.id, true)
+        undo: () => { history?.undo(); setNodeVisibility(definition.id, false); },
+        redo: () => { history?.redo(); setNodeVisibility(definition.id, true); }
     });
     if (openInspector) openNodeEditor(definition);
     return object;
@@ -3356,14 +3357,26 @@ function applyNodeTemplate(template) {
     // Built against `definition` after its states are resolved, via the same function the node
     // editor's own source term UI uses -- a self-referencing coupling (e.g. displacement's rate
     // equals velocity) needs no cross-node binding, just a symbol match against this node's own states.
+    const sharedBefore = structuredClone(model.sharedParameters);
+    const { sharedAfter, sharedByKey } = resolveTemplateSharedParameters(template.sharedParameters, sharedBefore);
     definition.sourceTerms = (template.sourceTerms ?? []).map((term) => {
-        const built = { id: allocateModelEntityId(), state: term.state, expression: term.expression };
+        const built = {
+            id: allocateModelEntityId(), state: term.state, expression: term.expression,
+            ...(term.setsValue ? { setsValue: true } : {}),
+            ...(term.parameters?.length ? { parameters: term.parameters.map((parameter) => templateParameter(parameter, sharedByKey)) } : {})
+        };
         built.expressionModel = normalizeSourceTermExpressionModel(definition, built);
         built.expression = built.expressionModel.latex;
         return built;
     });
     hideCards();
-    insertNodeDefinition(definition);
+    model.sharedParameters = sharedAfter;
+    insertNodeDefinition(definition, {
+        history: {
+            undo: () => { model.sharedParameters = structuredClone(sharedBefore); },
+            redo: () => { model.sharedParameters = structuredClone(sharedAfter); }
+        }
+    });
 }
 
 // Arms the existing endpoint-pick flow for both endpoints in sequence (no node needs to be
@@ -3428,6 +3441,43 @@ function assignBundleEndpoints(template, nodes) {
         : 'The selected nodes cannot be matched to the bundle\'s endpoints one-to-one.' };
 }
 
+// A template's declared shared parameters, added to a copy of the project's: a project-scoped one
+// reuses an existing shared parameter with the same symbol, anything else gets a fresh one (with a
+// numeric suffix if its symbol is taken), so each placement of an instance-scoped one is its own.
+function resolveTemplateSharedParameters(declaredList, sharedBefore) {
+    const sharedAfter = structuredClone(sharedBefore);
+    const sharedByKey = new Map();
+    for (const declared of declaredList ?? []) {
+        const existing = declared.scope === 'project' ? sharedAfter.find((shared) => shared.symbol === declared.symbol) : null;
+        if (existing) {
+            sharedByKey.set(declared.key, existing);
+            continue;
+        }
+        let symbol = declared.symbol;
+        for (let suffix = 2; sharedAfter.some((shared) => shared.symbol === symbol); suffix += 1) symbol = `${declared.symbol}${suffix}`;
+        const created = {
+            id: allocateModelEntityId(), name: declared.name, symbol, value: declared.value, unit: declared.unit ?? '',
+            mode: declared.mode ?? 'constant',
+            ...(declared.mode === 'live' ? { control: structuredClone(declared.control) } : {})
+        };
+        sharedAfter.push(created);
+        sharedByKey.set(declared.key, created);
+    }
+    return { sharedAfter, sharedByKey };
+}
+
+// A template parameter as placed in the model, linked to its shared parameter when it names one.
+function templateParameter(parameter, sharedByKey) {
+    const shared = parameter.shared === undefined ? null : sharedByKey.get(parameter.shared);
+    const source = shared ?? parameter;
+    return {
+        id: allocateModelEntityId(), name: parameter.name, symbol: parameter.symbol,
+        value: Number(source.value) || 0, unit: source.unit ?? '', mode: source.mode ?? 'constant',
+        ...(source.mode === 'live' ? { control: structuredClone(source.control) } : {}),
+        ...(shared ? { sharedParameterId: shared.id } : {})
+    };
+}
+
 // Stamps out every edge of a bundle between the selected nodes as one undoable step. Shared
 // parameters the bundle declares are created once and linked from each edge parameter that names
 // them; a "project"-scoped one reuses an existing shared parameter with the same symbol instead,
@@ -3453,24 +3503,7 @@ function applyBundleTemplate(template) {
     }
 
     const sharedBefore = structuredClone(model.sharedParameters);
-    const sharedAfter = structuredClone(sharedBefore);
-    const sharedByKey = new Map();
-    for (const declared of template.sharedParameters ?? []) {
-        const existing = declared.scope === 'project' ? sharedAfter.find((shared) => shared.symbol === declared.symbol) : null;
-        if (existing) {
-            sharedByKey.set(declared.key, existing);
-            continue;
-        }
-        let symbol = declared.symbol;
-        for (let suffix = 2; sharedAfter.some((shared) => shared.symbol === symbol); suffix += 1) symbol = `${declared.symbol}${suffix}`;
-        const created = {
-            id: allocateModelEntityId(), name: declared.name, symbol, value: declared.value, unit: declared.unit ?? '',
-            mode: declared.mode ?? 'constant',
-            ...(declared.mode === 'live' ? { control: structuredClone(declared.control) } : {})
-        };
-        sharedAfter.push(created);
-        sharedByKey.set(declared.key, created);
-    }
+    const { sharedAfter, sharedByKey } = resolveTemplateSharedParameters(template.sharedParameters, sharedBefore);
 
     const definitions = [];
     for (const [index, edge] of template.edges.entries()) {
@@ -3481,16 +3514,7 @@ function applyBundleTemplate(template) {
             return node.states.find((state) => state.symbol === symbol);
         };
         const outputNode = edge.output.role === 'source' ? fromNode : toNode;
-        const parameters = (edge.parameters ?? []).map((parameter) => {
-            const shared = parameter.shared === undefined ? null : sharedByKey.get(parameter.shared);
-            const source = shared ?? parameter;
-            return {
-                id: allocateModelEntityId(), name: parameter.name, symbol: parameter.symbol,
-                value: Number(source.value) || 0, unit: source.unit ?? '', mode: source.mode ?? 'constant',
-                ...(source.mode === 'live' ? { control: structuredClone(source.control) } : {}),
-                ...(shared ? { sharedParameterId: shared.id } : {})
-            };
-        });
+        const parameters = (edge.parameters ?? []).map((parameter) => templateParameter(parameter, sharedByKey));
         const definition = {
             id: allocateModelEntityId(), title: edge.name, source: fromNode.id, target: toNode.id,
             sourceStateId: stateFor(fromNode, 'source', edge.ports.source)?.id ?? null,

@@ -23,6 +23,8 @@ Drag from the library sidebar, drop at a canvas position — the same shape of i
 
 **As shipped, this is click-to-place instead**: clicking a node template places it at a fixed position with the same cascading offset "Add node" already uses for its own blank-default placement, rather than drag-and-drop. See `applyNodeTemplate`'s own comment in `src/renderer/renderer.mjs` for why drag-to-position was left for later rather than built here.
 
+A node template can also carry `sourceTerms`: each names one of the template's own states, an `expression`, optional `parameters` and an optional `setsValue` (an algebraic state, see [Project schema](../projectSchema.md)). A term parameter is either a plain local one (`{ name, symbol, value, unit }`) or `{ name, symbol, shared: <key> }`, linked to one of the template's `sharedParameters`. Those follow the same rules as a bundle's (below): an `"instance"`-scoped one is created fresh for every node placed, so each warehouse gets its own lead time to fork on; a `"project"`-scoped one is reused by symbol, so it is one definition across every node and bundle that declares it. Placing the node, with any shared parameters it created, is one undo step.
+
 ## Applying an edge template
 
 Click the template to arm the existing "connect two nodes" interaction (the same flow "Connect to" and manual edge creation already use), pre-loaded with the template's equation/parameters. The only new step is binding the template's declared ports to real states, and that binding is **automatic, not a picker**:
