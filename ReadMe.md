@@ -181,7 +181,7 @@ The packaged app can also run a project headlessly from a terminal — no window
 Konjugate.exe --cli run model.kjt --target-time 30 --output-kjt result.kjt --output-csv result.csv
 
 # Linux (AppImage — make it executable once with chmod +x)
-./Konjugate-*-linux-x64.AppImage --cli run model.kjt --target-time 30 --output-kjt result.kjt --output-csv result.csv
+./Konjugate-*-x86_64.AppImage --cli run model.kjt --target-time 30 --output-kjt result.kjt --output-csv result.csv
 ```
 
 - `--cli run <project.kjt> --target-time <seconds>` runs the project's active run configuration (or `--configuration <name-or-id>` to pick another) for the given simulated duration.

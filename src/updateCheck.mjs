@@ -3,8 +3,7 @@
 const releasesEndpoint = 'https://api.github.com/repos/zenineasa/Konjugate/releases/latest';
 
 // Matches the installer filenames the Makefile actually produces (see packageMacos/
-// packageWindows/packageLinux in the Makefile): *-macos-*.dmg, *-windows-*-setup.exe,
-// *-linux-*.AppImage.
+// packageWindows/packageLinux in the Makefile): *.dmg, *-setup.exe, *.AppImage.
 const platformAssetPatterns = {
     darwin: /\.dmg$/i,
     win32: /\.exe$/i,

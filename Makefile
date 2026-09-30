@@ -35,6 +35,10 @@ else
 endif
 macSignIdentity ?=
 appleNotaryProfile ?=
+# Embedded into the AppImage so AppImageUpdate and similar tools can find newer releases; the
+# glob has to keep matching the .zsync file distributableLinux publishes next to the AppImage.
+# Set it to empty to build an AppImage without update information (and without needing zsyncmake).
+appImageUpdateInformation ?= gh-releases-zsync|zenineasa|Konjugate|latest|$(appName)-*-$(appImageArch).AppImage.zsync
 
 .DEFAULT_GOAL := build
 
@@ -78,6 +82,9 @@ else
 	hostArch := $(hostMachine)
 	appImageArch := $(hostMachine)
 endif
+# AppImage naming convention: no platform in the name (every AppImage is for Linux), and the
+# architecture spelled the way `uname -m` does -- e.g. Konjugate-1.0.0-x86_64.AppImage.
+appImageName := $(appName)-$(appVersion)-$(appImageArch).AppImage
 
 ifeq ($(hostSystem),Darwin)
 	hostPlatform := darwin
@@ -313,7 +320,7 @@ endif
 		codesign -dv $(releaseDir)/dmg/$(appName).app/Contents/Resources/engine/libmetis.dylib 2>&1 | grep -q "^Signature=" \
 			|| { echo "libmetis.dylib is not signed inside the packaged app."; exit 1; }; \
 	fi
-	rm -f $(releaseDir)/$(appName)-$(appVersion)-macos-$(hostArch).dmg
+	rm -f $(releaseDir)/$(appName)-$(appVersion)-$(hostArch).dmg
 	create-dmg \
 		--volname "$(appName)" \
 		--volicon $(iconDir)/app.icns \
@@ -325,18 +332,18 @@ endif
 		--app-drop-link 510 240 \
 		--no-internet-enable \
 		--format UDZO \
-		$(releaseDir)/$(appName)-$(appVersion)-macos-$(hostArch).dmg \
+		$(releaseDir)/$(appName)-$(appVersion)-$(hostArch).dmg \
 		$(releaseDir)/dmg
 ifneq ($(strip $(appleNotaryProfile)),)
 	@test -n "$(macSignIdentity)" || { echo "macSignIdentity is required when notarizing."; exit 1; }
 	xcrun notarytool submit \
-		$(releaseDir)/$(appName)-$(appVersion)-macos-$(hostArch).dmg \
+		$(releaseDir)/$(appName)-$(appVersion)-$(hostArch).dmg \
 		--keychain-profile "$(appleNotaryProfile)" \
 		--wait
-	xcrun stapler staple $(releaseDir)/$(appName)-$(appVersion)-macos-$(hostArch).dmg
+	xcrun stapler staple $(releaseDir)/$(appName)-$(appVersion)-$(hostArch).dmg
 endif
 	rm -rf $(releaseDir)/dmg
-	@echo "Created $(releaseDir)/$(appName)-$(appVersion)-macos-$(hostArch).dmg"
+	@echo "Created $(releaseDir)/$(appName)-$(appVersion)-$(hostArch).dmg"
 
 distributableWindows: packageWindows
 	@where makensis >nul 2>nul || (echo makensis is required to create the Windows installer - please install NSIS. && exit 1)
@@ -348,9 +355,9 @@ distributableWindows: packageWindows
 		-DSOURCE_DIR=$(packageDir)/$(appName)-win32-$(hostArch) \
 		-DICON_PATH=$(iconDir)/app.ico \
 		-DLICENSE_PATH=LICENSE \
-		-DOUTPUT_FILE=$(releaseDir)/$(appName)-$(appVersion)-windows-$(hostArch)-setup.exe \
+		-DOUTPUT_FILE=$(releaseDir)/$(appName)-$(appVersion)-$(hostArch)-setup.exe \
 		packaging/windows/installer.nsi
-	@echo "Created $(releaseDir)/$(appName)-$(appVersion)-windows-$(hostArch)-setup.exe"
+	@echo "Created $(releaseDir)/$(appName)-$(appVersion)-$(hostArch)-setup.exe"
 
 distributableWindowsPortable: packageWindows
 	@$(MKDIR) $(releaseDir)
@@ -371,11 +378,22 @@ distributableLinux: packageLinux
 	@$(MKDIR) $(releaseDir)/$(appName).AppDir/usr/share/metainfo
 	cp packaging/linux/$(desktopId).metainfo.xml $(releaseDir)/$(appName).AppDir/usr/share/metainfo/$(desktopId).metainfo.xml
 	chmod +x $(releaseDir)/$(appName).AppDir/AppRun
+ifneq ($(strip $(appImageUpdateInformation)),)
+	rm -f $(appImageName).zsync $(releaseDir)/$(appImageName).zsync
+	ARCH=$(appImageArch) appimagetool \
+		--updateinformation "$(appImageUpdateInformation)" \
+		$(releaseDir)/$(appName).AppDir \
+		$(releaseDir)/$(appImageName)
+	@# zsyncmake writes the .zsync into the working directory, not next to the AppImage.
+	@if [ -f $(appImageName).zsync ]; then mv $(appImageName).zsync $(releaseDir)/; fi
+	@test -f $(releaseDir)/$(appImageName).zsync || { echo "appimagetool did not produce $(appImageName).zsync - install zsyncmake (the zsync package), or set appImageUpdateInformation= to skip update information."; exit 1; }
+else
 	ARCH=$(appImageArch) appimagetool \
 		$(releaseDir)/$(appName).AppDir \
-		$(releaseDir)/$(appName)-$(appVersion)-linux-$(hostArch).AppImage
+		$(releaseDir)/$(appImageName)
+endif
 	rm -rf $(releaseDir)/$(appName).AppDir
-	@echo "Created $(releaseDir)/$(appName)-$(appVersion)-linux-$(hostArch).AppImage"
+	@echo "Created $(releaseDir)/$(appImageName)"
 
 cleanPackage:
 	$(RM) $(packageDir) $(releaseDir)

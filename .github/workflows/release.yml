@@ -29,8 +29,15 @@ jobs:
             # 2027, after which x86_64 macOS runners go away entirely -- this will need revisiting
             # (or dropping) before then. The Makefile already auto-detects architecture correctly
             # on either runner, so no other build-side change is needed for this to work.
+            #
+            # Linux is pinned to ubuntu-22.04 rather than ubuntu-latest on purpose: the AppImage
+            # isn't self-contained (the engine links the system's glibc/libstdc++), so it only
+            # runs on distributions at least as new as the one it was built on. The AppImage
+            # catalog's test flagged the ubuntu-latest (24.04, glibc 2.38+) build as too new;
+            # the convention is to build on the oldest still-supported Ubuntu LTS. Move this
+            # forward only when that release leaves standard support (22.04: April 2027).
             matrix:
-                os: [macos-latest, macos-15-intel, ubuntu-latest, windows-latest]
+                os: [macos-latest, macos-15-intel, ubuntu-22.04, windows-latest]
         runs-on: ${{ matrix.os }}
         steps:
             - uses: actions/checkout@v4
@@ -108,9 +115,12 @@ jobs:
                   }
             - name: Install Linux packaging prerequisites
               if: runner.os == 'Linux'
+              # zsync provides zsyncmake, which appimagetool needs to write the .zsync file that
+              # goes with the update information the Makefile embeds (without it, appimagetool
+              # only warns and skips the file -- the Makefile then fails the build).
               run: |
                   sudo apt-get update
-                  sudo apt-get install -y librsvg2-bin
+                  sudo apt-get install -y librsvg2-bin zsync
                   curl -L -o /usr/local/bin/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
                   chmod +x /usr/local/bin/appimagetool
             - run: npm ci
@@ -126,6 +136,11 @@ jobs:
               # sidesteps this entirely since it's inherently tied to MSVC, no auto-detection
               # involved. Ninja could work here too with CMAKE_C_COMPILER/CMAKE_CXX_COMPILER
               # explicitly pinned to cl, but that's unverified -- revisit deliberately, not blindly.
+              #
+              # APPIMAGE_EXTRACT_AND_RUN only matters on Linux: appimagetool is itself an AppImage,
+              # and this makes it unpack itself instead of depending on the runner having FUSE.
+              env:
+                  APPIMAGE_EXTRACT_AND_RUN: 1
               run: make distributable
             - name: Verify Windows installer's silent-install path
               if: runner.os == 'Windows'
@@ -172,15 +187,40 @@ jobs:
               with:
                   path: out/release
                   merge-multiple: true
+            - name: Compose release notes
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  repository: ${{ github.repository }}
+                  tag: ${{ github.ref_name }}
+              run: |
+                  assetLink() {
+                      local matches=(out/release/$1)
+                      if [ ! -f "${matches[0]}" ]; then echo "No release asset matches $1." >&2; exit 1; fi
+                      local file="${matches[0]##*/}"
+                      echo "- $2: [$file](https://github.com/$repository/releases/download/$tag/$file)"
+                  }
+                  {
+                      cat <<'EOF'
+                  > **Installation notes:** Konjugate isn't code-signed yet (an active choice while the project is in beta), so your OS may show a security warning on first launch. This doesn't mean the download is corrupted.
+                  >
+                  > - **macOS** — if you see "is damaged and can't be opened": move Konjugate.app to Applications, then in Terminal run `xattr -cr /Applications/Konjugate.app`. Or: System Settings → Privacy & Security → Open Anyway.
+                  > - **Windows** — if you see a blue "Windows protected your PC" warning from SmartScreen, click **More info**, then click the **Run anyway** button that appears.
+
+                  EOF
+                      gh api "repos/$repository/releases/generate-notes" -f tag_name="$tag" --jq .body
+                      echo
+                      echo "## Downloads"
+                      echo
+                      assetLink '*.AppImage' 'Linux'
+                      assetLink '*-setup.exe' 'Windows'
+                      assetLink '*-arm64.dmg' 'macOS (Apple silicon)'
+                      assetLink '*-x64.dmg' 'macOS (Intel)'
+                  } > "$RUNNER_TEMP/releaseNotes.md"
+                  cat "$RUNNER_TEMP/releaseNotes.md"
             - uses: softprops/action-gh-release@v2
               with:
                   files: out/release/*
-                  generate_release_notes: true
-                  body: |
-                      > **Installation notes:** Konjugate isn't code-signed yet (an active choice while the project is in beta), so your OS may show a security warning on first launch. This doesn't mean the download is corrupted.
-                      >
-                      > - **macOS** — if you see "is damaged and can't be opened": move Konjugate.app to Applications, then in Terminal run `xattr -cr /Applications/Konjugate.app`. Or: System Settings → Privacy & Security → Open Anyway.
-                      > - **Windows** — if you see a blue "Windows protected your PC" warning from SmartScreen, click **More info**, then click the **Run anyway** button that appears.
+                  body_path: ${{ runner.temp }}/releaseNotes.md
 
     # No package-manager publish jobs here for now -- winget, Snap, and Homebrew Cask are all
     # deliberately deferred (see docs/packageManagerDistribution.md for the full picture and per-

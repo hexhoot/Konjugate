@@ -76,7 +76,7 @@ Two more concrete gaps, found by comparing to Konjugate's actual `Makefile`/`rel
   `<app>-darwin-<arch>.zip`, built and signed the same way the `.app` itself is. This would be a new,
   additional build output alongside the existing DMG, not a replacement for it.
 - **Artifact naming doesn't match `electron-updater`'s expectations.** Konjugate's current naming
-  (`Konjugate-<version>-macos-<arch>.dmg`, `-windows-<arch>-setup.exe`, `-linux-<arch>.AppImage`,
+  (`Konjugate-<version>-<arch>.dmg`, `-<arch>-setup.exe`, `-<arch>.AppImage`,
   all defined in `Makefile`) is a project-specific convention, not what `electron-updater` looks for
   by default. Since the feed manifest is hand-written either way (previous point), this isn't a
   blocker — the manifest just needs to point at whatever Konjugate actually names its files — but
