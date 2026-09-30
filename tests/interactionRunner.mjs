@@ -1925,8 +1925,23 @@ export async function runInteractionTests(driver) {
             await evaluate(window, `document.querySelector('#edgeEditor [data-close-card]').click()`);
         }
 
-        const point = await evaluate(window, `window.__relationshipScreenPoint('Second relationship')`);
-        assert.ok(point, 'Could not locate the new relationship on screen.');
+        // Click a point on the new relationship that no other relationship (or its label) covers. It shares
+        // its source node with "Heat source", so its midpoint can lie on or beside that one's line or label,
+        // depending on the window's size and the screen's scale.
+        const point = await evaluate(window, `(() => {
+            const others = ['Heat source', 'Air convection gain', 'Battery convection loss'];
+            const otherPoints = others.flatMap((title) => Array.from({ length: 41 }, (_, index) => window.__relationshipScreenPoint(title, index / 40)).filter(Boolean));
+            let best = null;
+            for (let index = 6; index <= 34; index += 1) {
+                const candidate = window.__relationshipScreenPoint('Second relationship', index / 40);
+                if (!candidate) continue;
+                const onCanvas = document.elementFromPoint(candidate.x, candidate.y)?.tagName === 'CANVAS';
+                const clearance = Math.min(...otherPoints.map((other) => Math.hypot(other.x - candidate.x, other.y - candidate.y)));
+                if (onCanvas && (!best || clearance > best.clearance)) best = { ...candidate, clearance };
+            }
+            return best;
+        })()`);
+        assert.ok(point, 'Could not find a point on the new relationship that nothing else covers.');
         await window.mouseMove(point);
         await window.mouseDown(point, { button: 'left', clickCount: 1 });
         await window.mouseUp(point, { button: 'left', clickCount: 1 });

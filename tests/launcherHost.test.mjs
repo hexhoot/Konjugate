@@ -7,6 +7,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { validateAddonManifest } from '../src/addonHost.mjs';
 import {
+    checkRunLength,
     applyOverrides, buildRunManifest, composeBranchSamples, decodeText, extractSeries, fetchAllowed, safeFileName, resolveInterventions, resultsToCsv, runImporter, runScenarioBranches, sha256
 } from '../src/launcherHost.mjs';
 
@@ -281,4 +282,16 @@ test('a launcher may require features, and one this version does not have is ref
     assert.equal(validateAddonManifest(withRequires([])).kind, 'launcher');
     assert.throws(() => validateAddonManifest(withRequires(['scenarioOverrides', 'timeTravel'])), /needs timeTravel, which this version of Konjugate does not provide/);
     assert.throws(() => validateAddonManifest(withRequires('runRecord')), /list of names/);
+});
+
+test('a window may choose a run length up to a number of engine steps, in whatever unit the model counts time', () => {
+    // A model in days with 0.1-day steps, as the fintech toolbox builds: 2,000 days is 20,000 steps.
+    assert.equal(checkRunLength(2000, 5, 0.1), 2000);
+    // A model in seconds with 15-minute steps: 90 days is 8,640 steps, and must be allowed.
+    assert.equal(checkRunLength(90 * 86400, 10 * 86400, 900), 90 * 86400);
+    assert.throws(() => checkRunLength(5, 5, 0.1), /The run length must be more than 5/);
+    assert.throws(() => checkRunLength(Number.NaN, 0, 1), /The run length must be more than 0/);
+    // Too many steps for a window to ask for in one run, whatever the unit.
+    assert.throws(() => checkRunLength(600000, 0, 1), /at most 500000 \(500,000 steps of 1\)/);
+    assert.throws(() => checkRunLength(20 * 365 * 86400, 0, 900), /at most 450000000 \(500,000 steps of 900\)/);
 });

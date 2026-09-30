@@ -104,6 +104,16 @@ std::optional<NodeStabilityAssessment> assessNodeStability(
     assessment.substeps = node.substeps;
     assessment.nodeStepSize = nodeStepSize;
 
+    // A conserved total (a quantity passed round among a node's states) or a running sum has a rate
+    // of exactly zero, but the finite-difference Jacobian gives it round-off of either sign, about
+    // 1e-10 of the node's fastest rate. So a mode below a millionth of the fastest rate is taken as
+    // neutral: neither a slow decay (which would make every such node look stiff, with ratios of
+    // 1e10 and more) nor a growing mode. A genuine decay a million times slower than the fastest
+    // does not move over the fast timescale either, so leaving it out loses nothing that matters here.
+    double spectralRadius = 0;
+    for (Eigen::Index index = 0; index < solver.eigenvalues().size(); ++index) spectralRadius = std::max(spectralRadius, std::abs(solver.eigenvalues()(index)));
+    const auto neutralRate = 1e-6 * spectralRadius;
+
     double slowestNegativeRate = 0;
     double fastestNegativeRate = 0;
     std::size_t negativeRealPartCount = 0;
@@ -118,7 +128,7 @@ std::optional<NodeStabilityAssessment> assessNodeStability(
         if (amplification > assessment.maxAmplificationFactor) dominantIndex = index;
         assessment.maxAmplificationFactor = std::max(assessment.maxAmplificationFactor, amplification);
 
-        if (eigenvalue.real() < 0) {
+        if (eigenvalue.real() < -neutralRate) {
             const auto rate = std::abs(eigenvalue.real());
             if (!negativeRealPartCount || rate < slowestNegativeRate) slowestNegativeRate = rate;
             if (!negativeRealPartCount || rate > fastestNegativeRate) fastestNegativeRate = rate;
@@ -127,7 +137,8 @@ std::optional<NodeStabilityAssessment> assessNodeStability(
             // sqrt) -- the largest node step size that keeps THIS eigenvalue's own mode stable.
             // The tightest bound across every eigenvalue is what actually stabilizes the node.
             minStableNodeStepSize = std::min(minStableNodeStepSize, -2 * eigenvalue.real() / std::norm(eigenvalue));
-        } else {
+        } else if (eigenvalue.real() > neutralRate || std::abs(eigenvalue.imag()) > neutralRate) {
+            // Growing, or oscillating without decay: Explicit Euler amplifies either at every step size.
             hasNonNegativeRealPart = true;
         }
     }

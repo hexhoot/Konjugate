@@ -99,6 +99,58 @@ boost::property_tree::ptree twoDecayRatesProject(double slowRate, double fastRat
     return parseProject(json.str());
 }
 
+// Three states passing a conserved quantity round a ring -- a' = k(c - a), b' = k(a - b), c' = k(b - c),
+// like trucks cycling through loaded, returning and idle -- plus, optionally, an unrelated fast decay
+// d' = -fastRate * d. The ring's Jacobian has an exact zero eigenvalue (the conserved total) and a pair
+// with real part -1.5k; a finite-difference Jacobian turns that zero into round-off of either sign.
+boost::property_tree::ptree conservedRingProject(double rate, double fastRate) {
+    std::ostringstream json;
+    const auto term = [&](int id, const char* state, int stateId, const char* plus, int plusId, const char* minus, int minusId) {
+        std::ostringstream out;
+        out << R"json({"id": )json" << id << R"json(, "state": ")json" << state << R"json(", "expression": "\\mathrm{k} \\cdot ()json" << plus << " - " << minus << R"json()",
+            "parameters": [{"id": )json" << id + 1 << R"json(, "name": "Rate", "symbol": "k", "value": )json" << rate << R"json(, "mode": "constant"}],
+            "expressionModel": {
+                "latex": "\\mathrm{k} \\cdot ()json" << plus << " - " << minus << R"json()", "output": {"stateId": )json" << stateId << R"json(},
+                "bindings": [
+                    {"kind": "state", "stateId": )json" << plusId << R"json(, "symbol": ")json" << plus << R"json(", "label": ")json" << plus << R"json("},
+                    {"kind": "state", "stateId": )json" << minusId << R"json(, "symbol": ")json" << minus << R"json(", "label": ")json" << minus << R"json("},
+                    {"kind": "parameter", "parameterId": )json" << id + 1 << R"json(, "symbol": "k", "label": "k"}
+                ],
+                "mathJson": ["Multiply", "k", ["Add", ")json" << plus << R"json(", ["Negate", ")json" << minus << R"json("]]]
+            }})json";
+        return out.str();
+    };
+    json << R"json({
+        "format": "konjugate", "version": 1,
+        "nodes": [{
+            "id": 1, "name": "Ring",
+            "states": [
+                {"id": 11, "name": "A", "symbol": "a", "initialValue": 46.7},
+                {"id": 12, "name": "B", "symbol": "b", "initialValue": 70},
+                {"id": 13, "name": "C", "symbol": "c", "initialValue": 30.3})json"
+         << (fastRate > 0 ? R"json(, {"id": 14, "name": "D", "symbol": "d", "initialValue": 1})json" : "") << R"json(
+            ],
+            "sourceTerms": [)json" << term(21, "a", 11, "c", 13, "a", 11) << ", " << term(23, "b", 12, "a", 11, "b", 12) << ", " << term(25, "c", 13, "b", 12, "c", 13);
+    if (fastRate > 0) {
+        json << R"json(, {"id": 27, "state": "d", "expression": "-\\mathrm{f} \\cdot d",
+            "parameters": [{"id": 28, "name": "Fast rate", "symbol": "f", "value": )json" << fastRate << R"json(, "mode": "constant"}],
+            "expressionModel": {
+                "latex": "-\\mathrm{f} \\cdot d", "output": {"stateId": 14},
+                "bindings": [
+                    {"kind": "state", "stateId": 14, "symbol": "d", "label": "d"},
+                    {"kind": "parameter", "parameterId": 28, "symbol": "f", "label": "f"}
+                ],
+                "mathJson": ["Multiply", ["Negate", "f"], "d"]
+            }})json";
+    }
+    json << R"json(],
+            "numerics": {"substepsPerGlobalStep": 1}
+        }],
+        "edges": []
+    })json";
+    return parseProject(json.str());
+}
+
 // y = 2x (algebraic, setsValue), dx/dt = -y -- coupling through the algebraic state should give
 // the exact same eigenvalue as a direct dx/dt = -2x, proving the perturbation correctly re-runs
 // applyAlgebraicTasks (not just evaluateContributionTasks) for each perturbed differential state.
@@ -218,6 +270,29 @@ void assessNodeStabilityComputesAStiffnessRatio() {
     require(assessment->stiffnessRatio.has_value(), "Two decoupled negative-real eigenvalues should produce a stiffness ratio.");
     require(std::abs(*assessment->stiffnessRatio - 100.0) < 1e-3,
         "The stiffness ratio of two decoupled decay rates should be exactly fastRate/slowRate.");
+}
+
+void assessNodeStabilityIgnoresAConservedQuantityWhenJudgingStiffness() {
+    // A conserved total is a zero-rate mode, not a slow one: it neither decays nor needs a small step.
+    // Treating its round-off as a tiny negative rate reported ratios of 1e15 and more on every such node.
+    for (const auto rate : {1.0 / 17280, 0.37, 3.0}) {
+        const auto plan = konjugate::compileExecutionPlan(conservedRingProject(rate, 0));
+        const auto assessment = konjugate::assessNodeStability(plan.nodes.at(0), plan.initialStates, 0.01 / rate);
+        require(assessment.has_value(), "assessment expected");
+        require(assessment->stable, "The ring is stable at this step size.");
+        require(!assessment->stiffnessRatio.has_value() || *assessment->stiffnessRatio < 1.01,
+            "A conserved ring's decaying modes share one rate, so it is not stiff (got a ratio of " + std::to_string(assessment->stiffnessRatio.value_or(0)) + ").");
+    }
+}
+
+void assessNodeStabilityStillReportsStiffnessBesideAConservedQuantity() {
+    const auto plan = konjugate::compileExecutionPlan(conservedRingProject(0.37, 555));
+    const auto assessment = konjugate::assessNodeStability(plan.nodes.at(0), plan.initialStates, 0.001);
+    require(assessment.has_value(), "assessment expected");
+    require(assessment->stiffnessRatio.has_value(), "A fast decay beside the ring is still stiff.");
+    // Fastest 555, slowest the ring's decaying pair at 1.5 x 0.37.
+    require(std::abs(*assessment->stiffnessRatio - 555 / (1.5 * 0.37)) < 1e-3 * 555 / (1.5 * 0.37),
+        "The ratio compares the fast decay with the ring's decaying modes (got " + std::to_string(*assessment->stiffnessRatio) + ").");
 }
 
 void assessNodeStabilityFollowsCouplingThroughAnAlgebraicState() {
@@ -374,6 +449,8 @@ int main() {
         assessNodeStabilityFlagsAnObviouslyUnstableDecay();
         assessNodeStabilityAcceptsTheSameDecayOnceSubsteppedEnough();
         assessNodeStabilityComputesAStiffnessRatio();
+        assessNodeStabilityIgnoresAConservedQuantityWhenJudgingStiffness();
+        assessNodeStabilityStillReportsStiffnessBesideAConservedQuantity();
         assessNodeStabilityFollowsCouplingThroughAnAlgebraicState();
         assessNodeStabilitySkipsANodeWithNoDifferentialStates();
         assessNodeStabilitySkipsAProgrammableNode();

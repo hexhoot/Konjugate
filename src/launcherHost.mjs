@@ -19,7 +19,10 @@ const maximumImporterDataBytes = 8 * 1024 * 1024;
 const maximumOptionsBytes = 2 * 1024 * 1024;
 const maximumFetchBytes = 5 * 1024 * 1024;
 const maximumSuppliedSamples = 5000;
-const maximumRunTime = 2000;
+// A run length the window chooses is limited by engine steps, not by time: models count time in whatever
+// unit suits them (days, or seconds with a per-day conversion), so a cap in time units would be either
+// too tight for one or too loose for another.
+const maximumRunSteps = 500000;
 const maximumFetchedTextBytes = 1024 * 1024;
 const fetchTimeoutMilliseconds = 20000;
 const maximumRedirects = 3;
@@ -107,6 +110,17 @@ export function runImporter({ addonDirectory, importer, files, options = {}, tim
 }
 
 // ---- scenarios --------------------------------------------------------------------------------------
+
+// A run length the window asks for: after the scenario's fork, and at most maximumRunSteps of the model's own
+// global step. Returns the run length; throws a message a user can act on.
+export function checkRunLength(runTime, forkAt, globalTimeStep) {
+    const step = Number.isFinite(globalTimeStep) && globalTimeStep > 0 ? globalTimeStep : 1;
+    const maximum = maximumRunSteps * step;
+    if (!(Number.isFinite(runTime) && runTime > forkAt && runTime <= maximum)) {
+        throw new Error(`The run length must be more than ${forkAt} and at most ${maximum} (${maximumRunSteps.toLocaleString('en')} steps of ${step}).`);
+    }
+    return runTime;
+}
 
 // Turns a declared scenario into concrete parameter changes. A parameter is found by its `key` in the
 // importer's parameter index: `chosen` targets the entry belonging to the entity the user picked, `all`
@@ -572,7 +586,7 @@ export function registerLauncherHandlers(deps) {
         const declaredScenario = declared(addon.manifest.contributes?.scenarios, 'scenarioId', scenarioId, 'scenario');
         if (!workspace.imported) throw new Error('Import your data first.');
         // The window may choose how far ahead to run, and may supply the data a scenario declares it takes.
-        if (runTime !== null && !(Number.isFinite(runTime) && runTime > declaredScenario.forkAt && runTime <= maximumRunTime)) throw new Error(`The run length must be more than ${declaredScenario.forkAt} and at most ${maximumRunTime}.`);
+        if (runTime !== null) checkRunLength(runTime, declaredScenario.forkAt, workspace.imported.document.runConfigurations?.[0]?.globalTimeStep);
         if (supplied !== null && JSON.stringify(supplied).length > maximumOptionsBytes) throw new Error('The supplied data is larger than the host accepts.');
         const scenario = { ...declaredScenario, ...(runTime === null ? {} : { runTime }) };
         if (scenario.choose && !workspace.imported.entities.includes(entity)) throw new Error(`Choose ${scenario.choose.label.toLowerCase()} first.`);
