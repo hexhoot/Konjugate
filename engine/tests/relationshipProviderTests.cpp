@@ -1310,7 +1310,7 @@ boost::property_tree::ptree setsValueProgrammableTimeReportingProject() {
 // equation-based algebraic task can never surface this (a MathJSON expression has no notion of
 // simulation time at all), which is exactly why the earlier unit-level applyAlgebraicTasks tests
 // in executionPlanTests.cpp -- all equation-based -- never caught it.
-void setsValueProgrammableTaskEvaluatesAtEndOfEachSubstepNotStart() {
+void setsValueProgrammableTaskReportsTheStepEndTime() {
     const auto plan = konjugate::compileExecutionPlan(setsValueProgrammableTimeReportingProject());
     require(plan.nodes.at(0).algebraicTasks.size() == 1, "The setsValue provider source term should compile into algebraicTasks.");
 
@@ -1320,8 +1320,8 @@ void setsValueProgrammableTaskEvaluatesAtEndOfEachSubstepNotStart() {
     konjugate::ProviderRuntime runtime(config);
     runtime.initialize(plan);
 
-    // One global step of duration 1.0, split into 2 substeps of 0.5 each: substep 0 ends at
-    // simulationTime 0.5, substep 1 (the final, reported one) ends at 1.0.
+    // One global step of duration 1.0, split into 2 substeps of 0.5 each. The provider is last
+    // evaluated after the final update, at the step's end, so the node reports t = 1.0.
     const konjugate::StateValues snapshot = {0};
     const auto result = konjugate::integrateNode(plan.nodes.at(0), snapshot, {}, 0.0, 1.0, &runtime);
     require(std::abs(result.states[0] - 1.0) < 1e-9,
@@ -1383,6 +1383,6 @@ int main() {
     validatorRejectsASetsValueAlgebraicLoop();
     compileExecutionPlanOrdersDependentAlgebraicTasksCorrectly();
     setsValueSourceTermsOnlyReferenceTheSymbolsTheyUse();
-    setsValueProgrammableTaskEvaluatesAtEndOfEachSubstepNotStart();
+    setsValueProgrammableTaskReportsTheStepEndTime();
     providerRuntimeExecutesAProgrammableSourceTermEndToEnd();
 }

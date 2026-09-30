@@ -103,6 +103,7 @@ function cppNodeStepBlocks(model, providerInfo) {
             contributionLines,
             `            for (int index = 0; index < ${stateCount}; ++index) state[index] += nodeTimeStep * derivative[index];`,
             '        }',
+            cppAlgebraicLines(plan, providerInfo, 'end'),
             commitLines,
             '    }'
         ].join('\n');

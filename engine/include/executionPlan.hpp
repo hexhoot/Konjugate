@@ -284,9 +284,11 @@ std::vector<std::pair<std::size_t, double>> reduceContributions(
 // reads from, this composes with any solver: there is no derivative or stepSize-dependent
 // arithmetic here at all, unlike the Euler-specific pseudo-derivative trick this replaces. Always
 // intra-node (see compileExecutionPlan's dependency-ordering comment) -- takes no
-// synchronizationSnapshot because a source term's bindings are never cross-node.
+// synchronizationSnapshot because a source term's bindings are never cross-node. `evaluationTime` is
+// the instant localStates represent: the value is g(x, t) at one instant, so it always agrees with
+// the states it is stored beside. stepSize is only passed on to a programmable term's provider.
 void applyAlgebraicTasks(const std::vector<ContributionTask>& algebraicTasks, StateValues& localStates,
-                         const NodeParameterValues& parameterValues, double simulationTime, double stepSize,
+                         const NodeParameterValues& parameterValues, double evaluationTime, double stepSize,
                          ProviderEvaluator* providerEvaluator);
 
 struct NodeIntegrationResult {

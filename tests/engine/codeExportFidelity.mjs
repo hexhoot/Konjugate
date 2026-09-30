@@ -50,8 +50,10 @@ function commandExists(executable) {
 // its baked default (no runtime override is sent to any of the three engines being compared).
 // The sixth node covers algebraic (setsValue) states: two of them, declared out of dependency
 // order, recomputed every substep and read by an ordinary differential term, plus a cases term.
-const nodeIds = { source: 1, squarer: 2, adder: 3, power: 4, coupled: 5, algebraic: 6 };
-const stateIds = { source: 11, squarer: 12, adder: 13, power: 14, coupled: 15, driver: 16, doubled: 17, shifted: 18, follower: 19 };
+// A seventh node reads one of them across a bidirectional edge, so it sees the value the algebraic
+// node hands back after its step, which exports must recompute the same way the engine does.
+const nodeIds = { source: 1, squarer: 2, adder: 3, power: 4, coupled: 5, algebraic: 6, tank: 7 };
+const stateIds = { source: 11, squarer: 12, adder: 13, power: 14, coupled: 15, driver: 16, doubled: 17, shifted: 18, follower: 19, tank: 20 };
 const paramIds = { k: 21, growth: 22, coupling: 23 };
 
 const document = {
@@ -156,6 +158,12 @@ const document = {
                     }
                 }
             ]
+        },
+        {
+            id: nodeIds.tank, name: 'Tank',
+            states: [{ id: stateIds.tank, name: 'Level', symbol: 'level', initialValue: 0, unit: '' }],
+            numerics: { substepsPerGlobalStep: 1 },
+            sourceTerms: []
         }
     ],
     edges: [
@@ -183,6 +191,17 @@ const document = {
                 output: { role: 'target', stateId: stateIds.coupled }, mathJson: ['Multiply', 'c', 'x']
             },
             parameters: [{ id: paramIds.coupling, name: 'Coupling', symbol: 'c', value: 0.15, mode: 'constant' }]
+        },
+        {
+            // level' = 0.05 shifted, drawn from Algebraic's follower: the tank reads the algebraic
+            // state through the snapshot, the algebraic node reads it locally
+            id: 203, name: 'Algebraic to Tank', source: { nodeId: nodeIds.algebraic, stateId: stateIds.follower }, target: { nodeId: nodeIds.tank, stateId: stateIds.tank },
+            directionality: 'bidirectional',
+            equationModel: {
+                latex: '0.05 s', bindings: [{ kind: 'state', role: 'source', nodeId: nodeIds.algebraic, stateId: stateIds.shifted, symbol: 's' }],
+                output: { role: 'target', stateId: stateIds.tank }, mathJson: ['Multiply', '0.05', 's']
+            },
+            parameters: []
         }
     ]
 };

@@ -130,9 +130,11 @@ export function compileExpressionNode(node) {
     return numericLiteralPattern.test(text) ? { literal: Number(text) } : { symbol: text };
 }
 
+// A contribution reads the substep's start time; an algebraic term reads the instant of the states it
+// is computed from, which the emitted code holds in algebraicTime (see cppAlgebraicLines).
 const timeTexts = {
-    cpp: { start: 'stepTime', end: '(stepTime + nodeTimeStep)' },
-    python: { start: 'step_time', end: '(step_time + node_time_step)' }
+    cpp: { start: 'stepTime', algebraic: 'algebraicTime' },
+    python: { start: 'step_time', algebraic: 'algebraic_time' }
 };
 
 export function symbolTexts(symbols, language) {
@@ -282,7 +284,7 @@ function buildContribution(spec, stateRecord) {
         if (binding.kind === 'time') {
             // Language-specific, resolved by symbolTexts(): substep start for a derivative, end
             // for an algebraic term -- the same instants the engine uses.
-            symbols.set(key, { time: algebraic ? 'end' : 'start', comment: 'simulation time' });
+            symbols.set(key, { time: algebraic ? 'algebraic' : 'start', comment: 'simulation time' });
             continue;
         }
         if (binding.kind === 'parameter') {
@@ -522,8 +524,7 @@ export function emitCppRegularContribution(contribution) {
     ].filter(Boolean).join('\n');
 }
 
-// An algebraic state is a plain replacement, written before this substep's derivatives are
-// evaluated so they (and any later algebraic term) read the fresh value.
+// An algebraic state is a plain replacement: g(x, t) from the node's states at one instant.
 export function emitCppAlgebraicTask(task, info) {
     const lines = ['        {', ...commentLines(task.symbols, '            ', '//')];
     if (task.implementation) {
@@ -534,8 +535,7 @@ export function emitCppAlgebraicTask(task, info) {
             `            const double inputValues[] = { ${values} };`,
             `            const std::string_view inputKeys[] = { ${keyLiterals} };`,
             '            konjugate::sdk::v1::OutputCollector outputCollector;',
-            // End of the substep, like the engine: the result is the state's value once it completes.
-            `            ${info.instanceVariable}->evaluate({stepTime + nodeTimeStep, nodeTimeStep, konjugate::sdk::v1::InputView(inputValues, inputKeys)}, outputCollector);`,
+            `            ${info.instanceVariable}->evaluate({algebraicTime, nodeTimeStep, konjugate::sdk::v1::InputView(inputValues, inputKeys)}, outputCollector);`,
             '            const double algebraicValue = outputCollector.gradient();'
         );
     } else {
@@ -549,8 +549,15 @@ export function emitCppAlgebraicTask(task, info) {
     return lines.join('\n');
 }
 
-export function cppAlgebraicLines(plan, providerInfo) {
-    return plan.algebraic.map((task) => emitCppAlgebraicTask(task, providerInfo.get(task))).join('\n');
+// The engine computes a node's algebraic states twice: at the start of every substep, before its
+// derivatives, and once more after the last update, so what the node hands back (and other nodes
+// read next step) agrees with its states. `where` picks which; both set algebraicTime to the instant
+// the states represent.
+export function cppAlgebraicLines(plan, providerInfo, where = 'substep') {
+    if (!plan.algebraic.length) return '';
+    const tasks = plan.algebraic.map((task) => emitCppAlgebraicTask(task, providerInfo.get(task))).join('\n');
+    if (where === 'substep') return ['        {', '            const double algebraicTime = stepTime;', tasks, '        }'].join('\n');
+    return ['        {', '            // After the last update: the value handed back with the states.', '            const double algebraicTime = currentTime + globalTimeStep;', tasks, '        }'].join('\n');
 }
 
 export function emitCppProviderContribution(contribution, info) {
@@ -600,6 +607,7 @@ function cppNodeIntegratorLambdas(model, providerInfo) {
             contributionLines,
             `            for (int index = 0; index < ${stateCount}; ++index) state[index] += nodeTimeStep * derivative[index];`,
             '        }',
+            cppAlgebraicLines(plan, providerInfo, 'end'),
             commitLines,
             '    };'
         ].join('\n');
@@ -855,8 +863,7 @@ function emitPythonAlgebraicTask(task, info) {
     if (task.implementation) {
         lines.push(
             '        outputs = OutputCollector()',
-            // End of the substep, like the engine: the result is the state's value once it completes.
-            `        ${info.instanceVariable}.evaluate(EvaluationContext(step_time + node_time_step, node_time_step), InputView(${pythonSymbolsDict(task.symbols)}), outputs)`,
+            `        ${info.instanceVariable}.evaluate(EvaluationContext(algebraic_time, node_time_step), InputView(${pythonSymbolsDict(task.symbols)}), outputs)`,
             '        algebraic_value = outputs.gradient'
         );
     } else {
@@ -898,7 +905,11 @@ function pythonNodeBlockLines(model, providerInfo, isMpi) {
                 : emitPythonRegularContribution(contribution)
         )).join('\n');
         const nodeProviderLines = plan.nodeProvider ? emitPythonNodeProvider(plan.nodeProvider, providerInfo.get(plan.nodeProvider)) : '';
+        // Twice, as the engine does: before each substep's derivatives, and after the last update
+        // (see cppAlgebraicLines).
         const algebraicLines = plan.algebraic.map((task) => emitPythonAlgebraicTask(task, providerInfo.get(task))).join('\n');
+        const algebraicAtStart = algebraicLines && ['        algebraic_time = step_time', algebraicLines].join('\n');
+        const algebraicAtEnd = algebraicLines && ['    algebraic_time = current_time + global_time_step', algebraicLines.split('\n').map((line) => line.replace(/^    /, '')).join('\n')].join('\n');
         const hasPendingAlgebraic = plan.nodeProvider?.outputs.some((output) => output.setsValue);
         const commitLines = plan.node.states.map((state, index) => (
             `    global_state[${model.stateRecord.get(state.id).globalIndex}] = state[${index}]`
@@ -909,7 +920,7 @@ function pythonNodeBlockLines(model, providerInfo, isMpi) {
             `    node_time_step = global_time_step / ${plan.substeps}`,
             `    for substep in range(${plan.substeps}):`,
             '        step_time = current_time + substep * node_time_step',
-            algebraicLines,
+            algebraicAtStart,
             `        derivative = [0.0] * ${stateCount}`,
             hasPendingAlgebraic ? '        pending_algebraic = []' : '',
             contributionLines,
@@ -917,6 +928,7 @@ function pythonNodeBlockLines(model, providerInfo, isMpi) {
             hasPendingAlgebraic ? '        for index, value in pending_algebraic:\n            if not math.isfinite(value): raise RuntimeError("An algebraic output produced a non-finite value.")\n            state[index] = value' : '',
             `        for index in range(${stateCount}):`,
             '            state[index] += node_time_step * derivative[index]',
+            algebraicAtEnd,
             commitLines
         ].filter(Boolean).join('\n');
         if (!isMpi) return body;

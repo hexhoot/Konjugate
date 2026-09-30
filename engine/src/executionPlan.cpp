@@ -735,7 +735,7 @@ std::vector<std::pair<std::size_t, double>> reduceContributions(
 }
 
 void applyAlgebraicTasks(const std::vector<ContributionTask>& algebraicTasks, StateValues& localStates,
-                         const NodeParameterValues& parameterValues, double simulationTime, double stepSize,
+                         const NodeParameterValues& parameterValues, double evaluationTime, double stepSize,
                          ProviderEvaluator* providerEvaluator) {
     for (std::size_t taskIndex = 0; taskIndex < algebraicTasks.size(); ++taskIndex) {
         const auto& task = algebraicTasks[taskIndex];
@@ -747,9 +747,7 @@ void applyAlgebraicTasks(const std::vector<ContributionTask>& algebraicTasks, St
             } else if (binding.source == BindingSource::localState) {
                 symbols[index] = localStates.at(binding.valueIndex);
             } else if (binding.source == BindingSource::simulationTime) {
-                // End of the substep: an algebraic value is the state's value once the substep
-                // completes (same convention as programmable algebraic terms below).
-                symbols[index] = simulationTime + stepSize;
+                symbols[index] = evaluationTime;
             } else {
                 // Structurally unreachable: compileBindings() forces every source term's
                 // bindings to BindingSource::localState unconditionally (an algebraic task is
@@ -766,18 +764,8 @@ void applyAlgebraicTasks(const std::vector<ContributionTask>& algebraicTasks, St
             if (!providerEvaluator) throw std::runtime_error("A programmable algebraic source term requires an initialized provider runtime.");
             const std::vector<const ContributionTask*> batchTasks{&task};
             const std::vector<std::span<const double>> inputs{symbols};
-            // simulationTime + stepSize (this substep's END, not its start) is deliberate, not a
-            // typo against evaluateContributionTasks' own convention: a differential
-            // contribution's derivative is sampled at the START of the interval it will be
-            // Euler-applied over (standard forward-Euler), but an algebraic task's result IS the
-            // state's value -- it needs to represent "this state's value once this substep
-            // completes," the same instant the Euler-updated differential states it composes
-            // with will represent. Using the start time here would make a time-dependent
-            // algebraic provider (e.g. src/providerTemplate.mjs's causal-inference CSV replay)
-            // report every value one substep late. This matches the standard semi-explicit DAE
-            // convention of resolving the algebraic relationship at the new time step before
-            // using it in that same step's differential update.
-            const auto results = providerEvaluator->evaluateBatch(batchTasks, inputs, simulationTime + stepSize, stepSize);
+            // The provider sees the same instant as the states it reads (see the declaration).
+            const auto results = providerEvaluator->evaluateBatch(batchTasks, inputs, evaluationTime, stepSize);
             if (results.size() != 1) throw std::runtime_error("A provider batch evaluation returned the wrong number of results.");
             value = results.front();
         }
@@ -817,9 +805,10 @@ NodeIntegrationResult integrateNode(const NodeExecutionPlan& node,
             parameterValues = resolveParameterValues(node.contributions, liveParameterValues, activeSchedules, substepTime);
             algebraicParameterValues = resolveParameterValues(node.algebraicTasks, liveParameterValues, activeSchedules, substepTime);
         }
-        // Algebraic states are recomputed first, in their precomputed dependency order, so both
-        // a later algebraic task and every ordinary (differential) contribution evaluated next
-        // in this same substep see the fresh value -- never the previous substep's.
+        // Algebraic states are recomputed first, in their precomputed dependency order, from the
+        // states at the start of this substep and at its start time, so a later algebraic task and
+        // every ordinary (differential) contribution evaluated next read g(x_k, t_k) -- the same
+        // instant explicit Euler evaluates everything else at.
         applyAlgebraicTasks(node.algebraicTasks, localStates, algebraicParameterValues, substepTime, nodeTimeStep, providerEvaluator);
         std::vector<std::pair<std::size_t, double>> algebraicNodeProviderWrites;
         const auto evaluated = evaluateContributionTasks(
@@ -833,6 +822,15 @@ NodeIntegrationResult integrateNode(const NodeExecutionPlan& node,
         for (const auto& [stateIndex, algebraicValue] : algebraicNodeProviderWrites) localStates.at(stateIndex) = algebraicValue;
         const auto derivatives = reduceContributions(evaluated);
         for (const auto& derivative : derivatives) localStates.at(derivative.first) += nodeTimeStep * derivative.second;
+    }
+    // And once more after the last update, so the node hands back g(x_{k+1}, t_{k+1}) beside x_{k+1}.
+    // Other nodes read this through the next step's synchronization snapshot; without it they would
+    // read a value computed from the states one step earlier, and a bidirectional edge reading it
+    // would add one amount at this end and subtract another at the other.
+    if (!node.algebraicTasks.empty()) {
+        const auto endTime = simulationTime + synchronizationStep;
+        if (hasSchedules) algebraicParameterValues = resolveParameterValues(node.algebraicTasks, liveParameterValues, activeSchedules, endTime);
+        applyAlgebraicTasks(node.algebraicTasks, localStates, algebraicParameterValues, endTime, nodeTimeStep, providerEvaluator);
     }
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - startedAt).count();
     return {std::move(localStates), static_cast<std::uint64_t>(std::max<std::int64_t>(0, elapsed))};

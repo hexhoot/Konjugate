@@ -3,8 +3,8 @@
 // Contract for the time binding ({ kind: "time" }, t in equations):
 //   - a differential term reads the substep's start time, so x' = t integrates to the left
 //     Riemann sum exactly
-//   - an algebraic (setsValue) term reads the substep's end time, so y = 10 t matches the sample
-//     time exactly
+//   - an algebraic (setsValue) term reads the instant of the states it is computed from, so the
+//     recorded y = 10 t matches the sample time exactly
 //   - a piecewise rate switches when t crosses its threshold, in edges as well as source terms
 //   - restarting from a mid-run checkpoint reproduces the uninterrupted run, since t is absolute
 
@@ -96,7 +96,7 @@ try {
         const substeps = Math.round(sample.time / substepTime);
         const leftSum = substepTime * substepTime * substeps * (substeps - 1) / 2;
         assert.ok(Math.abs(valueOf(sample, 11) - leftSum) < 1e-9, `A derivative must read the substep start time (t=${sample.time}).`);
-        assert.ok(Math.abs(valueOf(sample, 12) - 10 * sample.time) < 1e-9, `An algebraic term must read the substep end time (t=${sample.time}).`);
+        assert.ok(Math.abs(valueOf(sample, 12) - 10 * sample.time) < 1e-9, `A recorded algebraic value must match its sample time (t=${sample.time}).`);
     }
     const final = full.samples.at(-1);
     // switched: rate 1 for the 11 substeps starting before 0.53 s, then 3 for the remaining 29.
@@ -111,7 +111,7 @@ try {
         assert.ok(Math.abs(valueOf(resumed.samples.at(-1), stateId) - valueOf(final, stateId)) < 1e-9,
             `Resuming from a checkpoint must reproduce the uninterrupted run (state ${stateId}).`);
     }
-    console.log('✓ time binding contract: derivatives read the substep start, algebraic terms its end, piecewise terms switch on t, and restarts match.');
+    console.log('✓ time binding contract: derivatives read the substep start, recorded algebraic values match their sample time, piecewise terms switch on t, and restarts match.');
 } finally {
     await rm(directory, { recursive: true, force: true });
 }

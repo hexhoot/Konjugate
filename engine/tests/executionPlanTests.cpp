@@ -129,7 +129,7 @@ void evaluationSeparatesLocalSnapshotAndLiveParameterInputs() {
 
 // A time binding reads the substep's start time in a differential contribution and its end time
 // in an algebraic one.
-void timeBindingReadsSubstepStartForDerivativesAndEndForAlgebraicStates() {
+void timeBindingReadsSubstepStartForDerivativesAndTheEvaluationTimeForAlgebraicStates() {
     konjugate::NodeExecutionPlan node;
     node.nodeId = 1;
     konjugate::ContributionTask differential;
@@ -142,10 +142,12 @@ void timeBindingReadsSubstepStartForDerivativesAndEndForAlgebraicStates() {
         node, {0}, {0}, konjugate::resolveParameterValues(node, {}), 3.0, 0.5);
     require(evaluated.size() == 1 && evaluated.front().value == 3.0, "A differential time binding must read the substep start time.");
 
+    // An algebraic value is g(x, t) at the instant its states represent: integrateNode passes the
+    // substep start before the derivatives and the step end after the last update.
     std::vector<konjugate::ContributionTask> algebraicTasks = {differential};
     konjugate::StateValues local = {0};
     konjugate::applyAlgebraicTasks(algebraicTasks, local, konjugate::resolveParameterValues(algebraicTasks, {}), 3.0, 0.5, nullptr);
-    require(local[0] == 3.5, "An algebraic time binding must read the substep end time.");
+    require(local[0] == 3.0, "An algebraic time binding must read the time it is evaluated at.");
 }
 
 void parameterScheduleEvaluatesEachModeAndSupersedesEarlierSchedules() {
@@ -304,6 +306,34 @@ void integrateNodeAppliesAlgebraicTasksBeforeDifferentialContributionsEachSubste
     const auto result = konjugate::integrateNode(node, snapshot, {}, 0.0, 0.5);
     require(result.states[0] == 10, "The algebraic state was not recomputed by integrateNode.");
     require(result.states[1] == 5, "The differential contribution did not see the algebraic state's fresh value (expected 0 + 10*0.5 = 5).");
+}
+
+// x' = 1 and y = 2x on one node: after one step of 0.5 from x = 0, the node must hand back
+// y = 2 * 0.5 beside x = 0.5, not the y computed from x = 0 before the update. Other nodes read the
+// returned values, so a stale y would reach them one step late.
+void integrateNodeHandsBackAlgebraicStatesThatMatchTheUpdatedStates() {
+    konjugate::NodeExecutionPlan node;
+    node.nodeId = 1;
+    node.substeps = 2;
+    node.stateIndexes = {0, 1};
+
+    konjugate::ContributionTask rate = literalAlgebraicTask(5, 0, 1); // x' = 1
+    rate.outputStateId = 5;
+    rate.outputStateIndex = 0;
+    node.contributions = {rate};
+
+    konjugate::ContributionTask doubled;
+    doubled.outputStateId = 6;
+    doubled.outputStateIndex = 1;
+    doubled.bindings = {{"x", konjugate::BindingSource::localState, 5}};
+    doubled.bindings[0].valueIndex = 0;
+    doubled.expression = {konjugate::ExpressionOperation::multiply, 0, "", 0,
+        {{konjugate::ExpressionOperation::literal, 2, "", 0, {}}, {konjugate::ExpressionOperation::symbol, 0, "x", 0, {}}}};
+    node.algebraicTasks = {doubled};
+
+    const auto result = konjugate::integrateNode(node, {0, 0}, {}, 0.0, 0.5);
+    require(std::abs(result.states[0] - 0.5) < 1e-12, "x' = 1 over 0.5 should reach 0.5.");
+    require(std::abs(result.states[1] - 1.0) < 1e-12, "The node must hand back y = 2x for the updated x (expected 1).");
 }
 
 void taskExecutorBoundsConcurrentWorkAndPropagatesResults() {
@@ -612,12 +642,13 @@ int main() {
         deterministicReductionUsesTaskSequence();
         conditionalExpressionsPickTheFirstMatchingBranch();
         evaluationSeparatesLocalSnapshotAndLiveParameterInputs();
-        timeBindingReadsSubstepStartForDerivativesAndEndForAlgebraicStates();
+        timeBindingReadsSubstepStartForDerivativesAndTheEvaluationTimeForAlgebraicStates();
         parameterScheduleEvaluatesEachModeAndSupersedesEarlierSchedules();
         applyAlgebraicTasksSnapsMismatchedStateToTargetImmediately();
         applyAlgebraicTasksResolveDependencyOrderWithinOnePass();
         applyAlgebraicTasksRejectsANonFiniteResult();
         integrateNodeAppliesAlgebraicTasksBeforeDifferentialContributionsEachSubstep();
+        integrateNodeHandsBackAlgebraicStatesThatMatchTheUpdatedStates();
         taskExecutorBoundsConcurrentWorkAndPropagatesResults();
         taskSubmissionPrioritizesEstimatedWorkAndKeepsStableTies();
         dependencyGraphAggregatesParallelTasksAndPreservesDirection();
