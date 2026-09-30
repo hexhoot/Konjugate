@@ -6,6 +6,9 @@
 //   - the recorded algebraic value matches the states recorded with it (r = y/2 at every sample)
 //   - a time-only algebraic state (a = 10 t, like a data replay) gives every reader, its own node
 //     included, the value at the start of each step, so a' = a integrates to the left Riemann sum
+//   - an algebraic state whose initial value contradicts its expression (r = 5 where y/2 = 1) is
+//     set from its expression before the first step: it is recorded as 1 at t = 0, and the flow
+//     still conserves from the first step on
 
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -68,6 +71,21 @@ const document = {
 const executable = process.argv[2];
 if (!executable) throw new Error('Pass the konjugateEngine executable path.');
 const directory = await mkdtemp(join(tmpdir(), 'konjugateAlgebraicSnapshot-'));
+// Runs `model` for 3 s in steps of 1 s and returns its samples.
+async function run(model, name) {
+    const inputPath = join(directory, `${name}.kjt`);
+    const reportPath = join(directory, `${name}.report`);
+    const outputPath = join(directory, `${name}.kjr`);
+    const configurationPath = join(directory, `${name}.json`);
+    await writeFile(inputPath, await encodeProjectFile(JSON.stringify(model)));
+    await writeFile(configurationPath, JSON.stringify({ name, targetTime: 3, globalTimeStep: 1, outputInterval: 1 }));
+    assert.equal(await execute(executable, ['validate', inputPath, '--report', reportPath]), 0);
+    const report = decodeValidationReport(await readFile(reportPath));
+    assert.equal(report.valid, true, JSON.stringify(report.issues));
+    assert.equal(await execute(executable, ['run', inputPath, '--configuration', configurationPath, '--output', outputPath]), 0);
+    return decodeResultFile(await readFile(outputPath)).samples;
+}
+
 try {
     const inputPath = join(directory, 'model.kjt');
     const reportPath = join(directory, 'model.report');
@@ -95,7 +113,16 @@ try {
     assert.deepEqual(samples.map((sample) => value(sample, 41)), [0, 0, 10, 30], 'Another node must read a at the start of each step.');
     assert.deepEqual(samples.map((sample) => value(sample, 32)), [0, 0, 10, 30], 'The owning node must read a at the same instant as other nodes.');
 
-    console.log('✓ algebraic snapshot contract: a bidirectional edge reading an algebraic state conserves, recorded values match their states, and every reader sees the same value.');
+    // The tank's r starts at 5, contradicting r = y/2 = 1: it is settled before the first step.
+    const contradicting = structuredClone(document);
+    contradicting.nodes[1].states[1].initialValue = 5;
+    const settled = await run(contradicting, 'contradicting');
+    assert.equal(value(settled[0], 22), 1, 'An algebraic state must be set from its expression before the first step.');
+    for (const sample of settled) {
+        assert.ok(Math.abs(value(sample, 11) + value(sample, 21) - 12) < 1e-12, `The flow must conserve from the first step on (t=${sample.time}).`);
+    }
+
+    console.log('✓ algebraic snapshot contract: a bidirectional edge reading an algebraic state conserves, recorded values match their states, every reader sees the same value, and a contradicting initial value is settled before the first step.');
 } finally {
     await rm(directory, { recursive: true, force: true });
 }

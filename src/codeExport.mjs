@@ -560,6 +560,30 @@ export function cppAlgebraicLines(plan, providerInfo, where = 'substep') {
     return ['        {', '            // After the last update: the value handed back with the states.', '            const double algebraicTime = currentTime + globalTimeStep;', tasks, '        }'].join('\n');
 }
 
+// Before the first step the engine computes every algebraic state once from the initial states, so
+// the first row (and what other nodes read in step 0) agrees with the other initial values, even
+// when a parameter it uses was edited after the stored initial value was written.
+function cppSettleLines(model, providerInfo) {
+    const blocks = model.nodePlans.filter((plan) => plan.algebraic.length).map((plan) => {
+        const seed = plan.node.states.map((state) => `globalState[${model.stateRecord.get(state.id).globalIndex}]`).join(', ');
+        const commitLines = plan.node.states.map((state, index) => (
+            `        globalState[${model.stateRecord.get(state.id).globalIndex}] = state[${index}];`
+        )).join('\n');
+        return [
+            `    // Settle algebraic states: ${plan.node.name}`,
+            '    {',
+            '        const std::vector<double>& snapshot = globalState;',
+            `        double state[${plan.node.states.length}] = { ${seed} };`,
+            `        const double nodeTimeStep = globalTimeStep / ${plan.substeps}.0;`,
+            '        const double algebraicTime = 0.0;',
+            plan.algebraic.map((task) => emitCppAlgebraicTask(task, providerInfo.get(task))).join('\n'),
+            commitLines,
+            '    }'
+        ].join('\n');
+    });
+    return blocks.length ? blocks.join('\n') : null;
+}
+
 export function emitCppProviderContribution(contribution, info) {
     const keys = Array.from(contribution.symbols.keys());
     const values = keys.map((key) => contribution.symbols.get(key).text).join(', ') || '0.0';
@@ -763,6 +787,7 @@ function generateCpp(model, providers, meta, document) {
         isMpi ? mpiSetupLines(model) : null,
         providerDeclarations,
         `    std::vector<double> globalState = { ${initialStateLiterals(model)} };`,
+        cppSettleLines(model, providerInfo),
         outputSetupLines.join('\n'),
         '    writeRow(0);',
         '    const auto steps = static_cast<std::size_t>(std::ceil(targetTime / globalTimeStep - 1e-9));',
@@ -874,6 +899,28 @@ function emitPythonAlgebraicTask(task, info) {
         `        state[${task.outputLocalIndex}] = algebraic_value`
     );
     return lines.join('\n');
+}
+
+// Mirrors cppSettleLines: algebraic states computed once from the initial states before step 0.
+function pythonSettleLines(model, providerInfo) {
+    const blocks = model.nodePlans.filter((plan) => plan.algebraic.length).map((plan) => {
+        const seed = plan.node.states.map((state) => `global_state[${model.stateRecord.get(state.id).globalIndex}]`).join(', ');
+        const commitLines = plan.node.states.map((state, index) => (
+            `    global_state[${model.stateRecord.get(state.id).globalIndex}] = state[${index}]`
+        )).join('\n');
+        const tasks = plan.algebraic.map((task) => emitPythonAlgebraicTask(task, providerInfo.get(task)))
+            .join('\n').split('\n').map((line) => line.replace(/^    /, '')).join('\n');
+        return [
+            `    # Settle algebraic states: ${plan.node.name}`,
+            '    snapshot = global_state',
+            `    state = [${seed}]`,
+            `    node_time_step = global_time_step / ${plan.substeps}`,
+            '    algebraic_time = 0.0',
+            tasks,
+            commitLines
+        ].join('\n');
+    });
+    return blocks.join('\n');
 }
 
 function emitPythonNodeProvider(nodeProvider, info) {
@@ -1021,6 +1068,7 @@ function generatePython(model, providers, meta, document) {
         isMpi ? pythonMpiSetupLines(model) : '',
         providerInstances,
         `    global_state = [${initialStateLiterals(model)}]`,
+        pythonSettleLines(model, providerInfo),
         outputSetupLines.join('\n'),
         '    write_row(0)',
         '    steps = math.ceil(target_time / global_time_step - 1e-9)',

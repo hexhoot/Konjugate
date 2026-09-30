@@ -314,4 +314,13 @@ NodeIntegrationResult integrateNode(const NodeExecutionPlan& node,
                                     ProviderEvaluator* providerEvaluator = nullptr,
                                     const std::vector<ParameterSchedule>& activeSchedules = {});
 
+// Sets every node's algebraic states in `states` (the global state vector) from its other states at
+// `time`, before a run's first step or its first step after a restart. A stored algebraic value --
+// an initial value, or one computed under parameters a fork has since changed -- need not match
+// its expression, and other nodes read it through the synchronization snapshot before its own node
+// recomputes it. `stepSize` is only passed on to programmable terms' providers.
+void settleAlgebraicStates(const ExecutionPlan& plan, StateValues& states, const EntityValues& liveParameterValues,
+                           double time, double stepSize, ProviderEvaluator* providerEvaluator = nullptr,
+                           const std::vector<ParameterSchedule>& activeSchedules = {});
+
 }

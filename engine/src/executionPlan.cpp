@@ -778,6 +778,19 @@ void applyAlgebraicTasks(const std::vector<ContributionTask>& algebraicTasks, St
     }
 }
 
+void settleAlgebraicStates(const ExecutionPlan& plan, StateValues& states, const EntityValues& liveParameterValues,
+                           double time, double stepSize, ProviderEvaluator* providerEvaluator,
+                           const std::vector<ParameterSchedule>& activeSchedules) {
+    for (const auto& node : plan.nodes) {
+        if (node.algebraicTasks.empty()) continue;
+        StateValues localStates(node.stateIndexes.size());
+        for (std::size_t index = 0; index < node.stateIndexes.size(); ++index) localStates[index] = states.at(node.stateIndexes[index]);
+        const auto parameterValues = resolveParameterValues(node.algebraicTasks, liveParameterValues, activeSchedules, time);
+        applyAlgebraicTasks(node.algebraicTasks, localStates, parameterValues, time, stepSize / static_cast<double>(node.substeps), providerEvaluator);
+        for (std::size_t index = 0; index < node.stateIndexes.size(); ++index) states.at(node.stateIndexes[index]) = localStates[index];
+    }
+}
+
 NodeIntegrationResult integrateNode(const NodeExecutionPlan& node,
                                     const StateValues& synchronizationSnapshot,
                                     const EntityValues& liveParameterValues,

@@ -667,6 +667,10 @@ void runSimulation(const boost::property_tree::ptree& document,
         }
         return result;
     };
+    // Algebraic states are set from their expressions before anything is recorded or read, so the
+    // first sample, the first checkpoint and every node's first step all see consistent values --
+    // after a restart too, where a fork may have changed the parameters they depend on.
+    settleAlgebraicStates(executionPlan, states, runControl.parameterValues, startTime, globalTimeStep, providerRuntime.get(), runControl.activeSchedules);
     std::vector<Sample> samples = {{startTime, states}};
     std::vector<Checkpoint> checkpoints = {{createUuid(), startTime, states, captureProviderStates()}};
     std::vector<Sample> pendingEventSamples;

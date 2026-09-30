@@ -16,7 +16,7 @@
 
 import {
     buildModel, collectProviders, cppSdkNamespace, doubleLiteral,
-    cppAlgebraicLines, emitCppProviderContribution, emitCppRegularContribution, stripLeadingCppInclude
+    cppAlgebraicLines, emitCppAlgebraicTask, emitCppProviderContribution, emitCppRegularContribution, stripLeadingCppInclude
 } from './codeExport.mjs';
 
 // Assigns a stable FMI valueReference to every state (as an "output") and every parameter --
@@ -110,6 +110,28 @@ function cppNodeStepBlocks(model, providerInfo) {
     }).join('\n');
 }
 
+// The engine computes every algebraic state once from the initial states (and the parameter values
+// the run starts with) before the first step. An FMU host sets parameters after instantiation, so
+// settle() runs at construction and again on every setInput until the first doStep.
+function cppSettleBlocks(model, providerInfo) {
+    return model.nodePlans.filter((plan) => plan.algebraic.length).map((plan) => {
+        const seed = plan.node.states.map((state) => `snapshot[${model.stateRecord.get(state.id).globalIndex}]`).join(', ');
+        const commitLines = plan.node.states.map((state, index) => (
+            `        state_[${model.stateRecord.get(state.id).globalIndex}] = state[${index}];`
+        )).join('\n');
+        return [
+            `    // Node: ${plan.node.name}`,
+            '    {',
+            `        double state[${plan.node.states.length}] = { ${seed} };`,
+            `        const double nodeTimeStep = globalTimeStep / ${plan.substeps}.0;`,
+            '        const double algebraicTime = 0.0;',
+            plan.algebraic.map((task) => emitCppAlgebraicTask(task, providerInfo.get(task))).join('\n'),
+            commitLines,
+            '    }'
+        ].join('\n');
+    }).join('\n');
+}
+
 // Generates the model's C++ source and the variable list modelDescription.xml needs (same
 // valueReferences on both sides, by construction). document must already be flattened
 // (stripEdgeGroups(executionProjectDocument(...))), matching every other codeExport.mjs entry
@@ -137,6 +159,7 @@ export function generateFmiModel(document) {
     });
 
     const stepBlocks = cppNodeStepBlocks(model, providerInfo);
+    const settleBlocks = cppSettleBlocks(model, providerInfo);
 
     const providerMembers = providers.map((provider) => {
         const info = providerInfo.get(provider);
@@ -201,6 +224,7 @@ export function generateFmiModel(document) {
         'public:',
         '    GeneratedModel() {',
         providerInitializers,
+        '        settle();',
         '    }',
         '',
         '    void setInput(int valueReference, double value) override {',
@@ -208,6 +232,7 @@ export function generateFmiModel(document) {
         parameterSwitchCases,
         '            default: break;',
         '        }',
+        '        if (!started_) settle();',
         '    }',
         '',
         '    double getOutput(int valueReference) const override {',
@@ -218,6 +243,7 @@ export function generateFmiModel(document) {
         '    }',
         '',
         '    void doStep(double currentTime, double globalTimeStep) override {',
+        '        started_ = true;',
         '        const std::vector<double> snapshot = state_;',
         stepBlocks,
         '    }',
@@ -226,6 +252,14 @@ export function generateFmiModel(document) {
         stateCaptureMethods,
         '',
         'private:',
+        '    void settle() {',
+        `        const double globalTimeStep = ${doubleLiteral(globalTimeStep)};`,
+        '        const std::vector<double> snapshot = state_;',
+        '        (void)globalTimeStep; (void)snapshot;',
+        settleBlocks,
+        '    }',
+        '',
+        '    bool started_ = false;',
         `    std::vector<double> state_ = { ${stateVariables.map((variable) => doubleLiteral(variable.start)).join(', ')} };`,
         parameterMembers,
         providerMembers,
