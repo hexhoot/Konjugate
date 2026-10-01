@@ -21,7 +21,31 @@ env:
     MACOSX_DEPLOYMENT_TARGET: '11.0'
 
 jobs:
+    verifyAppMetainfo:
+        # Fails fast and cheaply, before the expensive 4-OS native build matrix below even starts,
+        # if packaging/linux/com.konjugate.Konjugate.metainfo.xml wasn't regenerated after a change
+        # to packaging/appMetadata.yml or package.json's version -- see
+        # docs/packageManagerDistribution.md's "Shared app metadata" section and
+        # scripts/generateAppMetainfo.mjs's own comment for why this file is generated rather than
+        # hand-edited. Installs just js-yaml rather than the full `npm ci` the build job below does --
+        # nothing else this generator touches is a real dependency of it.
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24.19.0
+            - run: npm install --no-save js-yaml
+            - run: npm run generate:app-metainfo
+            - name: Fail if the committed file doesn't match what the generator produces
+              run: |
+                  if ! git diff --exit-code packaging/linux/com.konjugate.Konjugate.metainfo.xml; then
+                      echo "::error::packaging/linux/com.konjugate.Konjugate.metainfo.xml is out of date -- run 'npm run generate:app-metainfo' and commit the result."
+                      exit 1
+                  fi
+
     build:
+        needs: verifyAppMetainfo
         strategy:
             fail-fast: false
             # macos-latest is Apple Silicon (arm64) only; macos-15-intel adds an x86_64 build

@@ -377,6 +377,17 @@ distributableLinux: packageLinux
 	cp $(iconDir)/app.png $(releaseDir)/$(appName).AppDir/.DirIcon
 	@$(MKDIR) $(releaseDir)/$(appName).AppDir/usr/share/metainfo
 	cp packaging/linux/$(desktopId).metainfo.xml $(releaseDir)/$(appName).AppDir/usr/share/metainfo/$(desktopId).metainfo.xml
+	@# The committed file's own <release>/screenshot tag are only ever a last-known-good snapshot --
+	@# this always overwrites them with the version actually being packaged right now and today's
+	@# date, so the copy embedded in the AppImage can never go stale the way it did once already
+	@# (see distribution/snap/snapcraft.yaml's adopt-info/override-pull comment: a hardcoded version
+	@# there went stale within one release too). The screenshot URL specifically needs an
+	@# already-pushed tag to resolve, which this build is guaranteed to have -- release.yml only
+	@# reaches this step after the triggering tag push.
+	sed -i \
+		-e 's#<release version="[^"]*" date="[^"]*" />#<release version="$(appVersion)" date="$(shell date +%Y-%m-%d)" />#' \
+		-e 's#\(raw\.githubusercontent\.com/zenineasa/Konjugate/\)v[0-9.]*\(/\)#\1v$(appVersion)\2#' \
+		$(releaseDir)/$(appName).AppDir/usr/share/metainfo/$(desktopId).metainfo.xml
 	chmod +x $(releaseDir)/$(appName).AppDir/AppRun
 ifneq ($(strip $(appImageUpdateInformation)),)
 	rm -f $(appImageName).zsync $(releaseDir)/$(appImageName).zsync

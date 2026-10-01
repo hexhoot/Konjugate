@@ -1,0 +1,33 @@
+# Copyright © 2026 Zenin Easa Panthakkalakath
+
+# The single source for descriptive app metadata (name, summary, description, links, license,
+# categories) that multiple packaging formats need. Previously this text was hand-copied
+# separately into packaging/linux/com.konjugate.Konjugate.metainfo.xml and
+# distribution/snap/snapcraft.yaml, where it silently drifted -- the two description fields had
+# already diverged by one punctuation mark before this file existed. Edit this file, then run
+# `npm run generate:app-metainfo` (scripts/generateAppMetainfo.mjs) to regenerate the AppStream
+# metainfo.xml from it.
+#
+# distribution/snap/snapcraft.yaml is not generated from this yet -- it isn't wired into release.yml
+# today, so keeping its copy in sync by hand remains a manual follow-up until Snap packaging is
+# actually revived (see docs/packageManagerDistribution.md). Update it by hand to match if you
+# change this file in the meantime.
+
+appId: com.konjugate.Konjugate
+developerId: com.konjugate
+name: Konjugate
+developerName: Zenin Easa Panthakkalakath
+summary: Graph-native simulation engine for engineering and digital twins
+description:
+  - Konjugate is an open-source graph-native simulation engine for building composable engineering simulations and digital twins.
+  - Rather than requiring users to manually assemble large system-level formulations, Konjugate represents systems as graphs of interconnected components. Components define their states and properties, while relationships define the equations governing how quantities are transported and transformed between them.
+homepage: https://github.com/zenineasa/Konjugate
+bugtracker: https://github.com/zenineasa/Konjugate/issues
+license: MPL-2.0
+metadataLicense: CC0-1.0
+categories:
+  - Science
+  - Engineering
+screenshot:
+  caption: Konjugate's graph-based model editor
+  path: assets/ForReadme/konjugateAppScreenshot.png

@@ -8,6 +8,14 @@ Two decisions shape everything below, both made deliberately: Konjugate ships **
 
 **Current status: all four channels are deferred.** None has a CI job in `release.yml` right now — see each section below for why. Homebrew Cask is blocked by real requirements (notarization, notability), not just a setup gap. winget and Snap are genuinely just a one-time human setup step away (see their sections), but that setup hasn't happened yet, so their jobs were removed rather than left in the workflow permanently failing. Flathub is blocked by its own project-maturity and AI-content policies (see its section) — revisit once those no longer apply.
 
+## Shared app metadata
+
+`packaging/appMetadata.yml` is the one source for the descriptive text (name, summary, description, homepage, bugtracker, license, categories, screenshot) that more than one packaging format needs. It exists because that text was previously hand-copied separately into `packaging/linux/com.konjugate.Konjugate.metainfo.xml` and `distribution/snap/snapcraft.yaml`, and had already drifted — the two `description` fields differed by one punctuation mark before anyone noticed. Run `npm run generate:app-metainfo` (`scripts/generateAppMetainfo.mjs`) after editing it to regenerate the AppStream file; `appstreamcli validate` should still pass cleanly afterward.
+
+`distribution/snap/snapcraft.yaml` is not generated from this yet — it isn't wired into `release.yml` today (see its own section below), so that's a real but lower-priority follow-up rather than something worth the risk of editing an unverified manifest alongside this change. Update it by hand to match if `appMetadata.yml` changes in the meantime.
+
+The generated file's own `<releases>` entry and screenshot URL version tag are still only a last-known-good snapshot at the moment someone runs the generator — `Makefile`'s `distributableLinux` target unconditionally overwrites both with the live `package.json` version at actual AppImage build time regardless (see that target's own comment), so the shipped binary's embedded copy can never be stale even if the generator hasn't been re-run recently.
+
 ## Homebrew Cask — deferred, two real blockers found
 
 **Status: on hold, not wired into CI.** A real `brew audit --cask --new konjugate` run (see below) surfaced two hard requirements this project doesn't meet yet, confirmed directly against Homebrew's own review tooling, not just their docs:
