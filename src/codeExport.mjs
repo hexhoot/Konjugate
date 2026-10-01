@@ -137,8 +137,23 @@ const timeTexts = {
     python: { start: 'step_time', algebraic: 'algebraic_time' }
 };
 
+// A parameter that follows a stored schedule reads it at the instant the engine resolves it: the
+// substep's start for a derivative, the algebraic instant for an algebraic term.
+const scheduleCalls = {
+    cpp: (index, time) => `scheduleValue(${index}, ${timeTexts.cpp[time]})`,
+    python: (index, time) => `schedule_value(${index}, ${timeTexts.python[time]})`
+};
+
+// The text a symbol entry reads as in `language`: a time, a scheduled parameter's lookup, or its
+// fixed text (a literal, a state slot, or an FMU member).
+export function symbolText(value, language) {
+    if (value.time) return timeTexts[language][value.time];
+    if (value.schedule !== undefined) return scheduleCalls[language](value.schedule, value.scheduleTime);
+    return value.text;
+}
+
 export function symbolTexts(symbols, language) {
-    return new Map(Array.from(symbols, ([key, value]) => [key, value.time ? timeTexts[language][value.time] : value.text]));
+    return new Map(Array.from(symbols, ([key, value]) => [key, symbolText(value, language)]));
 }
 
 export function emitExpression(node, symbols, operators) {
@@ -186,6 +201,8 @@ export function buildModel(sourceDocument) {
         nodeProvider: null
     }));
     const nodePlanById = new Map(nodePlans.map((plan) => [plan.node.id, plan]));
+    // Stored parameter schedules, one table per shared parameter however many parameters link to it.
+    const schedules = { list: [], byKey: new Map() };
 
     for (const plan of nodePlans) {
         for (const term of plan.node.sourceTerms ?? []) {
@@ -200,7 +217,7 @@ export function buildModel(sourceDocument) {
                 negate: false,
                 parameters: term.parameters ?? [],
                 identifierField: programmable ? 'key' : 'symbol'
-            }, stateRecord));
+            }, stateRecord, schedules));
         }
         plan.algebraic = orderAlgebraicTasks(plan);
         if (plan.node.implementation) plan.nodeProvider = buildNodeProvider(plan, stateRecord);
@@ -221,7 +238,7 @@ export function buildModel(sourceDocument) {
                 entityLabel: `relationship "${edge.name}"`, ownerPlan: outputPlan, alwaysLocal: false,
                 bindings, outputStateId, mathJson, implementation: edge.implementation ?? null, negate: false,
                 parameters: edge.parameters ?? [], identifierField
-            }, stateRecord));
+            }, stateRecord, schedules));
         }
         if (edge.directionality === 'bidirectional') {
             const otherNodeId = outputRole === 'target' ? edge.source.nodeId : edge.target.nodeId;
@@ -238,12 +255,12 @@ export function buildModel(sourceDocument) {
                     entityLabel: `relationship "${edge.name}"`, ownerPlan: otherPlan, alwaysLocal: false,
                     bindings, outputStateId: otherStateId, mathJson, implementation: edge.implementation ?? null, negate: true,
                     parameters: edge.parameters ?? [], identifierField
-                }, stateRecord));
+                }, stateRecord, schedules));
             }
         }
     }
 
-    return { nodePlans, globalStateCount: globalIndex, stateRecord };
+    return { nodePlans, globalStateCount: globalIndex, stateRecord, schedules: schedules.list };
 }
 
 // Same order as the engine: an algebraic state bound by another algebraic term is computed first.
@@ -274,7 +291,77 @@ function orderAlgebraicTasks(plan) {
     return ordered;
 }
 
-function buildContribution(spec, stateRecord) {
+// A parameter's stored schedule as a table: { hold, times, values }, checked as the engine checks it.
+function compileStoredSchedule(parameter) {
+    const { interpolation = 'linear', samples } = parameter.schedule;
+    if (interpolation !== 'linear' && interpolation !== 'hold') throw new Error(`Parameter "${parameter.name ?? parameter.symbol}" has a schedule whose interpolation is neither linear nor hold.`);
+    if (!Array.isArray(samples) || !samples.length) throw new Error(`Parameter "${parameter.name ?? parameter.symbol}" has a schedule with no samples.`);
+    const times = [];
+    const values = [];
+    for (const sample of samples) {
+        if (!Array.isArray(sample) || sample.length !== 2 || !sample.every(Number.isFinite) || (times.length && !(sample[0] > times.at(-1)))) {
+            throw new Error(`Parameter "${parameter.name ?? parameter.symbol}" has a schedule whose samples are not finite [time, value] pairs in increasing time.`);
+        }
+        times.push(sample[0]);
+        values.push(sample[1]);
+    }
+    return { hold: interpolation === 'hold', times, values, label: parameter.symbol };
+}
+
+// The lookup the engine's evaluateParameterSchedule() performs (executionPlan.cpp): edge-held
+// outside the samples, then held or linearly interpolated, found by binary search.
+export function cppScheduleLines(model) {
+    if (!model.schedules.length) return '';
+    const tables = model.schedules.map((schedule, index) => [
+        `// ${schedule.label}: ${schedule.times.length} samples, ${schedule.hold ? 'held' : 'linear'}`,
+        `const double scheduleTimes${index}[] = { ${schedule.times.map(doubleLiteral).join(', ')} };`,
+        `const double scheduleValues${index}[] = { ${schedule.values.map(doubleLiteral).join(', ')} };`
+    ].join('\n'));
+    return [
+        '// Stored parameter schedules (sharedParameters[].schedule): the parameter follows these samples over time.',
+        'struct ParameterScheduleTable { const double* times; const double* values; std::size_t count; bool hold; };',
+        ...tables,
+        `const ParameterScheduleTable parameterSchedules[] = { ${model.schedules.map((schedule, index) => `{ scheduleTimes${index}, scheduleValues${index}, ${schedule.times.length}, ${schedule.hold} }`).join(', ')} };`,
+        'inline double scheduleValue(std::size_t index, double time) {',
+        '    const ParameterScheduleTable& schedule = parameterSchedules[index];',
+        '    if (time <= schedule.times[0]) return schedule.values[0];',
+        '    if (time >= schedule.times[schedule.count - 1]) return schedule.values[schedule.count - 1];',
+        '    const std::size_t upper = static_cast<std::size_t>(std::upper_bound(schedule.times, schedule.times + schedule.count, time) - schedule.times);',
+        '    if (schedule.hold) return schedule.values[upper - 1];',
+        '    const double fraction = (time - schedule.times[upper - 1]) / (schedule.times[upper] - schedule.times[upper - 1]);',
+        '    return schedule.values[upper - 1] + fraction * (schedule.values[upper] - schedule.values[upper - 1]);',
+        '}',
+        ''
+    ].join('\n');
+}
+
+function pythonScheduleLines(model) {
+    if (!model.schedules.length) return '';
+    const literal = (value) => (Number.isInteger(value) ? `${value}.0` : doubleLiteral(value));
+    return [
+        '# Stored parameter schedules (sharedParameters[].schedule): the parameter follows these samples over time.',
+        'PARAMETER_SCHEDULES = [',
+        ...model.schedules.map((schedule) => `    (${schedule.hold ? 'True' : 'False'}, [${schedule.times.map(literal).join(', ')}], [${schedule.values.map(literal).join(', ')}]),  # ${schedule.label}`),
+        ']',
+        '',
+        '',
+        'def schedule_value(index, time):',
+        '    hold, times, values = PARAMETER_SCHEDULES[index]',
+        '    if time <= times[0]:',
+        '        return values[0]',
+        '    if time >= times[-1]:',
+        '        return values[-1]',
+        '    upper = bisect.bisect_right(times, time)',
+        '    if hold:',
+        '        return values[upper - 1]',
+        '    fraction = (time - times[upper - 1]) / (times[upper] - times[upper - 1])',
+        '    return values[upper - 1] + fraction * (values[upper] - values[upper - 1])',
+        '',
+        ''
+    ].join('\n');
+}
+
+function buildContribution(spec, stateRecord, schedules) {
     const { entityLabel, ownerPlan, alwaysLocal, algebraic = false, bindings, outputStateId, mathJson, implementation, negate, parameters, identifierField } = spec;
     const outputLocalIndex = ownerPlan.localIndexByStateId.get(outputStateId);
     if (outputLocalIndex === undefined) throw new Error(`The ${entityLabel} targets a state that is not on its own node.`);
@@ -294,6 +381,17 @@ function buildContribution(spec, stateRecord) {
             // that cares about liveness -- fmiCodeGen.mjs, which exposes a live parameter as a
             // real FMI input rather than baking it, unlike this module's own C++/Python export --
             // can tell without re-deriving the binding. Existing callers only read text/comment.
+            if (parameter.schedule) {
+                const scheduleKey = parameter.scheduleKey ?? `parameter:${parameter.id}`;
+                if (!schedules.byKey.has(scheduleKey)) {
+                    schedules.byKey.set(scheduleKey, schedules.list.length);
+                    schedules.list.push(compileStoredSchedule(parameter));
+                }
+                const schedule = schedules.byKey.get(scheduleKey);
+                // `text` is the C++ form, read directly by provider input lists; symbolText() gives either language.
+                symbols.set(key, { schedule, scheduleTime: algebraic ? 'algebraic' : 'start', text: scheduleCalls.cpp(schedule, algebraic ? 'algebraic' : 'start'), comment: `${parameter.symbol} (follows a schedule)`, parameter });
+                continue;
+            }
             symbols.set(key, { text: doubleLiteral(parameter.value), comment: parameter.symbol, parameter });
         } else {
             const record = stateRecord.get(binding.stateId);
@@ -771,6 +869,7 @@ function generateCpp(model, providers, meta, document) {
         '',
         providers.length ? `${cppSdkNamespace}\n` : '',
         providerBlocks.join('\n'),
+        cppScheduleLines(model),
         'int main(int argc, char** argv) {',
         isMpi ? '    MPI_Init(&argc, &argv);' : null,
         `    double targetTime = ${doubleLiteral(meta.defaultTargetTime)};`,
@@ -857,7 +956,7 @@ std::unique_ptr<konjugate::sdk::v1::RelationshipProvider> createRelationshipProv
 // ---- Python ----
 
 function pythonSymbolsDict(symbols) {
-    return `{${Array.from(symbols, ([key, value]) => `"${key}": ${value.text}`).join(', ')}}`;
+    return `{${Array.from(symbols, ([key, value]) => `"${key}": ${symbolText(value, 'python')}`).join(', ')}}`;
 }
 
 function emitPythonRegularContribution(contribution) {
@@ -1054,12 +1153,14 @@ function generatePython(model, providers, meta, document) {
     return [
         header,
         'import argparse',
+        model.schedules.length ? 'import bisect' : '',
         'import math',
         isMpi ? 'from mpi4py import MPI' : '',
         '',
         providers.length ? `${pythonSdkModule}\n` : '',
         providerBlocks.join('\n\n\n'),
         '',
+        pythonScheduleLines(model),
         'def run(target_time, output_path):',
         `    global_time_step = ${doubleLiteral(meta.globalTimeStep)}`,
         `    output_interval = ${doubleLiteral(meta.outputInterval)}`,

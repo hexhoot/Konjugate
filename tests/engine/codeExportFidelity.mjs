@@ -19,6 +19,7 @@ import { encodeProjectFile } from '../../src/projectFile.mjs';
 import { decodeResultFile } from '../../src/engineProtocol.mjs';
 import { generateStandaloneProgram } from '../../src/codeExport.mjs';
 import { decodeValidationReport } from '../../src/reportProtocol.mjs';
+import { addScheduledNode } from './fixtures/scheduledNodeFixture.mjs';
 
 function execute(executable, args, options = {}) {
     return new Promise((resolve, reject) => {
@@ -205,6 +206,12 @@ const document = {
         }
     ]
 };
+
+// An eighth node follows stored parameter schedules (held and linear, one of them live and linked twice).
+addScheduledNode(document, {
+    nodeId: 8, stateIds: { inflow: 31, level: 32, drift: 33 }, termIds: { inflow: 131, level: 132, drift: 133 },
+    parameterIds: { rate: 141, ramp: 142, rampAgain: 143 }
+});
 
 // Provider-based algebraic states. Providers can't be exported across languages, so these are
 // separate one-language documents: a C++ relationship provider with setsValue (C++ export), and a

@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <limits>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <unordered_map>
@@ -77,6 +78,8 @@ struct CompiledBinding {
     std::size_t parameterIndex = std::numeric_limits<std::size_t>::max();
 };
 
+struct ParameterSchedule;
+
 struct CompiledParameter {
     EntityId id = 0;
     double value = 0;
@@ -85,6 +88,12 @@ struct CompiledParameter {
     // for one linked to a project-level shared parameter it is that shared parameter's id, so a
     // single control value reaches every relationship that links to it.
     EntityId controlId = 0;
+    // A shared parameter's stored schedule (sharedParameters[].schedule, docs/projectSchema.md):
+    // the parameter's own value then follows this series over simulation time instead of being a
+    // constant. Live overrides and recorded interventions still take precedence over it, exactly as
+    // they do over a constant value. Shared, since every parameter linked to the same shared one
+    // compiles to the same schedule.
+    std::shared_ptr<const ParameterSchedule> schedule = nullptr;
 };
 
 // A recorded, timestamped intervention (docs/resultExploration.md's "Parameter interventions"),
@@ -108,6 +117,10 @@ struct ParameterSchedule {
     // interpolated and edge-held outside their range (the same convention as
     // src/providerTemplate.mjs's replayProviderSource()).
     std::vector<std::pair<double, double>> samples;
+    // Piecewise only: hold each sample's value until the next sample's time (a staircase) rather
+    // than interpolating -- for a series of per-period rates, such as a daily volume, whose total
+    // over each period must be kept.
+    bool hold = false;
 };
 
 double evaluateParameterSchedule(const ParameterSchedule& schedule, double simulationTime);
@@ -220,6 +233,9 @@ struct NodeExecutionPlan {
     std::vector<ContributionTask> algebraicTasks;
     std::optional<NodeProviderTask> nodeProvider;
     std::size_t estimatedOperationsPerSubstep = 0;
+    // True when any parameter of this node's tasks follows a stored schedule, so its values are
+    // re-resolved every substep (as they are while an intervention is recorded).
+    bool hasParameterSchedules = false;
 };
 
 struct ExecutionPlan {

@@ -7,10 +7,13 @@
 #include "partitionRuntime.hpp"
 #include "taskExecutor.hpp"
 #include <algorithm>
+#include <boost/property_tree/json_parser.hpp>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -637,6 +640,110 @@ void automaticBackendSelectionAccountsForWorkAndCommunication() {
 
 }
 
+
+// A shared parameter's stored schedule (sharedParameters[].schedule): compiled from the document
+// itself, so every run follows it from step 0, beneath live control and recorded interventions.
+konjugate::ExecutionPlan scheduledProject(const std::string& mode, const std::string& interpolation) {
+    std::istringstream input(R"json({
+        "format": "konjugate", "version": 1,
+        "sharedParameters": [{"id": 30, "name": "Rate", "symbol": "rate", "value": 99, "mode": ")json" + mode + R"json(",
+            "schedule": {"interpolation": ")json" + interpolation + R"json(", "samples": [[0, 1], [10, 3], [20, 3]]}}],
+        "nodes": [{
+            "id": 1, "name": "Tank",
+            "states": [{"id": 11, "name": "X", "symbol": "x", "initialValue": 0}],
+            "sourceTerms": [{
+                "id": 21, "state": "x", "expression": "\\mathrm{rate}",
+                "parameters": [{"id": 22, "name": "Rate", "symbol": "rate", "value": 5, "mode": "constant", "sharedParameterId": 30}],
+                "expressionModel": {
+                    "latex": "\\mathrm{rate}", "output": {"stateId": 11},
+                    "bindings": [{"kind": "parameter", "parameterId": 22, "symbol": "rate", "label": "rate"}],
+                    "mathJson": "rate"
+                }
+            }],
+            "numerics": {"substepsPerGlobalStep": 4}
+        }],
+        "edges": []
+    })json");
+    boost::property_tree::ptree document;
+    boost::property_tree::read_json(input, document);
+    return konjugate::compileExecutionPlan(document);
+}
+
+void storedParameterSchedulesDriveTheParameterBeneathLiveControl() {
+    using konjugate::ParameterSchedule;
+    // Hold: a staircase, each value kept until the next sample.
+    ParameterSchedule hold;
+    hold.mode = ParameterSchedule::Mode::piecewise;
+    hold.hold = true;
+    hold.samples = {{0, 1}, {10, 3}, {20, 5}};
+    require(konjugate::evaluateParameterSchedule(hold, -1) == 1, "A held schedule edge-holds its first sample.");
+    require(konjugate::evaluateParameterSchedule(hold, 9.999) == 1, "A held schedule keeps a sample's value until the next sample.");
+    require(konjugate::evaluateParameterSchedule(hold, 10) == 3, "A held schedule takes a sample's value exactly at its time.");
+    require(konjugate::evaluateParameterSchedule(hold, 25) == 5, "A held schedule edge-holds its last sample.");
+
+    // The binary search agrees with a plain linear scan over a long, uneven series.
+    ParameterSchedule longSeries;
+    longSeries.mode = ParameterSchedule::Mode::piecewise;
+    std::mt19937 random(7);
+    std::uniform_real_distribution<double> gap(0.1, 2.0);
+    std::uniform_real_distribution<double> level(-50, 50);
+    double time = 0;
+    for (int index = 0; index < 400; ++index) longSeries.samples.emplace_back(time += gap(random), level(random));
+    for (double at = -1; at < time + 1; at += 0.37) {
+        double expected = longSeries.samples.front().second;
+        if (at >= longSeries.samples.back().first) expected = longSeries.samples.back().second;
+        else for (std::size_t index = 1; index < longSeries.samples.size(); ++index) {
+            const auto [t1, v1] = longSeries.samples[index];
+            const auto [t0, v0] = longSeries.samples[index - 1];
+            if (at > t0 && at <= t1) { expected = v0 + (at - t0) / (t1 - t0) * (v1 - v0); break; }
+        }
+        require(std::abs(konjugate::evaluateParameterSchedule(longSeries, at) - expected) < 1e-9, "Interpolation must match a linear scan.");
+    }
+
+    // Compiled from the document: the linked parameter follows its shared parameter's schedule, not
+    // its own value (5) or the shared constant (99).
+    const auto plan = scheduledProject("constant", "hold");
+    require(plan.nodes.size() == 1 && plan.nodes.front().hasParameterSchedules, "A node reading a scheduled parameter is marked as such.");
+    const auto at = [&](double simulationTime, const konjugate::EntityValues& live = {}, const std::vector<ParameterSchedule>& active = {}) {
+        return konjugate::resolveParameterValues(plan.nodes.front(), live, active, simulationTime).front().front();
+    };
+    require(at(5) == 1 && at(10) == 3 && at(15) == 3, "The parameter follows its stored schedule.");
+    // A constant parameter ignores live control, scheduled or not.
+    require(at(5, {{30, 7}}) == 1, "A constant scheduled parameter ignores a live value.");
+
+    // Integrated through the same integrateNode the runner uses: dx/dt = rate over 20 s in 1 s
+    // steps (4 substeps each) gives 1·10 + 3·10 = 40 when held, and a ramp in between when linear.
+    const auto integrate = [](const konjugate::ExecutionPlan& compiled) {
+        auto states = compiled.initialStates;
+        for (int step = 0; step < 20; ++step) {
+            const auto result = konjugate::integrateNode(compiled.nodes.front(), states, {}, static_cast<double>(step), 1.0);
+            states.at(compiled.nodes.front().stateIndexes.front()) = result.states.front();
+        }
+        return states.at(compiled.nodes.front().stateIndexes.front());
+    };
+    require(std::abs(integrate(plan) - 40) < 1e-9, "A held schedule integrates to the sum of its periods.");
+    // Linear: the rate ramps 1 -> 3 over [0, 10], read at each quarter-step start: sum of 1 + 0.2·t
+    // over t = 0, 0.25, ..., 9.75 times 0.25, then 3 for ten more seconds.
+    double expected = 0;
+    for (int quarter = 0; quarter < 40; ++quarter) expected += 0.25 * (1 + 0.2 * quarter * 0.25);
+    expected += 30;
+    require(std::abs(integrate(scheduledProject("constant", "linear")) - expected) < 1e-9, "A linear schedule is read at every substep.");
+
+    // Live: a live value overrides the schedule, and a recorded intervention overrides both.
+    const auto live = scheduledProject("live", "hold");
+    const auto liveAt = [&](double simulationTime, const konjugate::EntityValues& values, const std::vector<ParameterSchedule>& active) {
+        return konjugate::resolveParameterValues(live.nodes.front(), values, active, simulationTime).front().front();
+    };
+    require(liveAt(15, {}, {}) == 3, "A live scheduled parameter follows its schedule until it is set.");
+    require(liveAt(15, {{30, 7}}, {}) == 7, "A live value takes over from the schedule.");
+    ParameterSchedule intervention;
+    intervention.parameterId = 30;
+    intervention.mode = ParameterSchedule::Mode::step;
+    intervention.startTime = 12;
+    intervention.targetValue = 11;
+    require(liveAt(11, {}, {intervention}) == 3 && liveAt(12, {}, {intervention}) == 11, "An intervention takes over from the schedule when it begins.");
+}
+
 int main() {
     try {
         deterministicReductionUsesTaskSequence();
@@ -644,6 +751,7 @@ int main() {
         evaluationSeparatesLocalSnapshotAndLiveParameterInputs();
         timeBindingReadsSubstepStartForDerivativesAndTheEvaluationTimeForAlgebraicStates();
         parameterScheduleEvaluatesEachModeAndSupersedesEarlierSchedules();
+        storedParameterSchedulesDriveTheParameterBeneathLiveControl();
         applyAlgebraicTasksSnapsMismatchedStateToTargetImmediately();
         applyAlgebraicTasksResolveDependencyOrderWithinOnePass();
         applyAlgebraicTasksRejectsANonFiniteResult();

@@ -388,6 +388,33 @@ ValidationResult validateModel(const boost::property_tree::ptree& document) {
                 add(result, "parameterTuningInvalid", "error", "Tunable parameter fitting bounds require minimum < maximum and an initial value within the bounds.", "sharedParameter", sharedId, "tuning");
             }
         }
+        // A stored schedule: the parameter follows these samples over simulation time.
+        if (const auto schedule = shared.get_child_optional("schedule")) {
+            const auto interpolation = schedule->get<std::string>("interpolation", "linear");
+            if (interpolation != "linear" && interpolation != "hold") {
+                add(result, "parameterScheduleInvalid", "error", "A parameter schedule's interpolation must be linear or hold.", "sharedParameter", sharedId, "schedule");
+            }
+            std::size_t count = 0;
+            bool wellFormed = true;
+            double previousTime = -std::numeric_limits<double>::infinity();
+            if (const auto samples = schedule->get_child_optional("samples")) for (const auto& sampleItem : *samples) {
+                std::vector<double> pair;
+                try {
+                    for (const auto& component : sampleItem.second) pair.push_back(component.second.get_value<double>());
+                } catch (const boost::property_tree::ptree_error&) {
+                    pair.clear();
+                }
+                if (pair.size() != 2 || !std::isfinite(pair[0]) || !std::isfinite(pair[1]) || !(pair[0] > previousTime)) wellFormed = false;
+                else previousTime = pair[0];
+                ++count;
+            }
+            if (!count || !wellFormed) {
+                add(result, "parameterScheduleInvalid", "error", "A parameter schedule needs at least one [time, value] sample, every number finite and the times strictly increasing.", "sharedParameter", sharedId, "schedule");
+            }
+            if (shared.get_child_optional("tuning")) {
+                add(result, "parameterScheduleTuned", "error", "A parameter that follows a schedule cannot also be a fitting target.", "sharedParameter", sharedId, "tuning");
+            }
+        }
         if (mode == "live" && shared.get_child_optional("control")) {
             const auto minimum = shared.get_optional<double>("control.minimum");
             const auto maximum = shared.get_optional<double>("control.maximum");

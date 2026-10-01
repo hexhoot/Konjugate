@@ -15,7 +15,7 @@
 // attached), instead of being baked to a constant.
 
 import {
-    buildModel, collectProviders, cppSdkNamespace, doubleLiteral,
+    buildModel, collectProviders, cppScheduleLines, cppSdkNamespace, doubleLiteral,
     cppAlgebraicLines, emitCppAlgebraicTask, emitCppProviderContribution, emitCppRegularContribution, stripLeadingCppInclude
 } from './codeExport.mjs';
 
@@ -48,7 +48,9 @@ function assignValueReferences(model) {
     const visitSymbols = (symbols) => {
         for (const value of symbols.values()) {
             const parameter = value.parameter;
-            if (!parameter || parameterValueReferences.has(parameter.id)) continue;
+            // A parameter that follows a stored schedule is computed inside the FMU from its samples,
+            // as the engine computes it, so it is not an FMI variable a host sets.
+            if (!parameter || value.schedule !== undefined || parameterValueReferences.has(parameter.id)) continue;
             parameterValueReferences.set(parameter.id, nextValueReference);
             const live = parameter.mode === 'live';
             parameterVariables.push({
@@ -72,7 +74,7 @@ function rewriteParameterSymbols(model, parameterValueReferences) {
         for (const contribution of [...plan.algebraic, ...plan.contributions]) {
             for (const value of contribution.symbols.values()) {
                 const parameter = value.parameter;
-                if (!parameter) continue;
+                if (!parameter || value.schedule !== undefined) continue;
                 value.text = `parameterValue_${parameterValueReferences.get(parameter.id)}`;
             }
         }
@@ -220,6 +222,7 @@ export function generateFmiModel(document) {
         providerBlocks.join('\n'),
         'namespace {',
         '',
+        cppScheduleLines(model),
         'class GeneratedModel final : public konjugate::sdk::v1::SimulationModel {',
         'public:',
         '    GeneratedModel() {',

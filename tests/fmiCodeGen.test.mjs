@@ -211,3 +211,19 @@ test('a bidirectional edge negates the contribution on its other endpoint', () =
     const negations = (source.match(/contributionValue = -contributionValue/g) ?? []).length;
     assert.equal(negations, 1);
 });
+
+test('a parameter that follows a stored schedule is computed inside the FMU, not exposed as a variable', () => {
+    const document = {
+        format: 'konjugate', version: 1, metadata: {}, runConfigurations: [{ id: 1, globalTimeStep: 0.1 }], edges: [],
+        sharedParameters: [{ id: 500, name: 'Rate', symbol: 'rate', value: 9, mode: 'live', schedule: { interpolation: 'linear', samples: [[0, 0], [2, 4]] } }],
+        nodes: [{
+            id: 1, name: 'Tank', states: [{ id: 2, name: 'Level', symbol: 'level', initialValue: 0, unit: '' }],
+            sourceTerms: [{ id: 3, state: 'level', expression: '', parameters: [{ id: 4, name: 'Rate', symbol: 'r', value: 0, mode: 'constant', sharedParameterId: 500 }],
+                expressionModel: { latex: '', bindings: [{ kind: 'parameter', parameterId: 4, symbol: 'r' }], output: { stateId: 2 }, mathJson: 'r' } }]
+        }]
+    };
+    const generated = generateFmiModel(document);
+    assert.deepEqual(generated.parameterVariables, []);
+    assert.match(generated.source, /double contributionValue = scheduleValue\(0, stepTime\);/);
+    assert.match(generated.source, /inline double scheduleValue\(std::size_t index, double time\)/);
+});

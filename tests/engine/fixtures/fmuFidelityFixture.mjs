@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { encodeProjectFile } from '../../../src/projectFile.mjs';
 import { decodeResultFile } from '../../../src/engineProtocol.mjs';
 import { decodeValidationReport } from '../../../src/reportProtocol.mjs';
+import { addScheduledNode } from './scheduledNodeFixture.mjs';
 
 export function execute(executable, args, options = {}) {
     return new Promise((resolve, reject) => {
@@ -152,18 +153,27 @@ export const document = {
     ]
 };
 
+// A node that follows stored parameter schedules (held and linear, one live and linked twice). A
+// scheduled parameter is computed inside the FMU, so it is not an FMI variable.
+addScheduledNode(document, {
+    nodeId: 6, stateIds: { inflow: 31, level: 32, drift: 33 }, termIds: { inflow: 131, level: 132, drift: 133 },
+    parameterIds: { rate: 141, ramp: 142, rampAgain: 143 }
+});
+
 // Order matches document.nodes' flattened states -- the same convention codeExportFidelity.mjs
 // and fmiCodeGen.mjs's assignValueReferences() both already rely on (states get value references
 // 0..stateCount-1 in this exact order).
 export const orderedStateNames = [
     'Source.Level', 'Squarer.Value', 'Adder.Value', 'Coupled.Value',
-    'Algebraic.Driver', 'Algebraic.Doubled', 'Algebraic.Shifted', 'Algebraic.Follower'
+    'Algebraic.Driver', 'Algebraic.Doubled', 'Algebraic.Shifted', 'Algebraic.Follower',
+    'Scheduled.Inflow', 'Scheduled.Level', 'Scheduled.Drift'
 ];
 export const stateNameByStateId = {
     [stateIds.source]: 'Source.Level', [stateIds.squarer]: 'Squarer.Value',
     [stateIds.adder]: 'Adder.Value', [stateIds.coupled]: 'Coupled.Value',
     [stateIds.driver]: 'Algebraic.Driver', [stateIds.doubled]: 'Algebraic.Doubled',
-    [stateIds.shifted]: 'Algebraic.Shifted', [stateIds.follower]: 'Algebraic.Follower'
+    [stateIds.shifted]: 'Algebraic.Shifted', [stateIds.follower]: 'Algebraic.Follower',
+    31: 'Scheduled.Inflow', 32: 'Scheduled.Level', 33: 'Scheduled.Drift'
 };
 
 export const globalTimeStep = 0.1;

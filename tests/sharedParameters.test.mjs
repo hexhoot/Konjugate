@@ -59,3 +59,17 @@ test('code export sees the shared value, not the linked parameter\'s own', () =>
         .map((entry) => entry.parameter.value);
     assert.deepEqual(values, [2, 2, 1]);
 });
+
+test('resolving carries a stored schedule to every linked parameter, keyed by its shared parameter', () => {
+    const document = {
+        sharedParameters: [{ id: 7, name: 'Rate', symbol: 'rate', value: 1, mode: 'constant', schedule: { interpolation: 'hold', samples: [[0, 1], [5, 2]] } }],
+        nodes: [], edges: [{ id: 1, parameters: [{ id: 2, symbol: 'a', sharedParameterId: 7 }, { id: 3, symbol: 'b', sharedParameterId: 7 }, { id: 4, symbol: 'c', value: 1, schedule: { samples: [[0, 1]] } }] }]
+    };
+    const resolved = resolveSharedParameters(document);
+    const [a, b, own] = resolved.edges[0].parameters;
+    assert.deepEqual(a.schedule, document.sharedParameters[0].schedule);
+    assert.equal(a.scheduleKey, 7);
+    assert.equal(b.scheduleKey, 7);
+    assert.notEqual(a.schedule, document.sharedParameters[0].schedule, 'a copy, not the original');
+    assert.equal(own.scheduleKey, undefined, 'an unlinked parameter is left as it is');
+});

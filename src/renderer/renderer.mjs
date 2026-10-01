@@ -4936,18 +4936,43 @@ function parameterRowCells(entry, { locked, indent = false }) {
         control.classList.toggle('invalid', Boolean(message));
         control.title = message;
     };
-    const value = document.createElement('input');
-    value.type = 'number';
-    value.step = 'any';
-    value.value = parameter.value;
-    value.dataset.field = 'value';
-    value.setAttribute('aria-label', `${parameter.name} value`);
-    value.disabled = locked;
-    value.addEventListener('change', () => {
-        const error = editParameterRow(entry, { value: value.value.trim() === '' ? NaN : Number(value.value) });
-        showError(value, error);
-    });
-    cell(value);
+    // A shared parameter with a stored schedule follows its samples over time: the table shows a
+    // summary instead of a value, and removing the schedule makes the stored value the constant again.
+    if (entry.kind === 'shared' && parameter.schedule) {
+        const samples = parameter.schedule.samples ?? [];
+        const values = samples.map((sample) => sample[1]);
+        const summary = document.createElement('span');
+        summary.className = 'scheduleCell';
+        summary.dataset.field = 'schedule';
+        const label = document.createElement('span');
+        label.textContent = `Schedule · ${samples.length} sample${samples.length === 1 ? '' : 's'}`;
+        label.title = samples.length
+            ? `${parameter.schedule.interpolation === 'hold' ? 'Each value held until the next sample' : 'Linearly interpolated'}, from t = ${formatFittedNumber(samples[0][0])} to ${formatFittedNumber(samples.at(-1)[0])}, values ${formatFittedNumber(Math.min(...values))} to ${formatFittedNumber(Math.max(...values))}. Removing the schedule makes ${formatFittedNumber(parameter.value)} the constant value.`
+            : 'An empty schedule.';
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'scheduleRemove';
+        remove.textContent = '×';
+        remove.title = 'Remove the schedule';
+        remove.setAttribute('aria-label', `Remove the schedule of ${parameter.name}`);
+        remove.disabled = locked;
+        remove.addEventListener('click', () => changeSharedParameter(parameter.id, (target) => { delete target.schedule; }));
+        summary.append(label, remove);
+        cell(summary);
+    } else {
+        const value = document.createElement('input');
+        value.type = 'number';
+        value.step = 'any';
+        value.value = parameter.value;
+        value.dataset.field = 'value';
+        value.setAttribute('aria-label', `${parameter.name} value`);
+        value.disabled = locked;
+        value.addEventListener('change', () => {
+            const error = editParameterRow(entry, { value: value.value.trim() === '' ? NaN : Number(value.value) });
+            showError(value, error);
+        });
+        cell(value);
+    }
 
     const unit = document.createElement('input');
     unit.value = parameter.unit ?? '';
@@ -4980,8 +5005,9 @@ function parameterRowCells(entry, { locked, indent = false }) {
     tunable.dataset.field = 'tunable';
     tunable.checked = Boolean(parameter.tuning);
     tunable.setAttribute('aria-label', `${parameter.name} is a fitting target`);
-    tunable.disabled = locked || parameter.mode === 'live';
-    tunable.title = parameter.mode === 'live' ? 'A live parameter is adjusted during a run, not fitted.' : 'Mark as a fitting target for digital-twin tuning';
+    tunable.disabled = locked || parameter.mode === 'live' || Boolean(parameter.schedule);
+    tunable.title = parameter.schedule ? 'A parameter that follows a schedule is not fitted.'
+        : parameter.mode === 'live' ? 'A live parameter is adjusted during a run, not fitted.' : 'Mark as a fitting target for digital-twin tuning';
     const bound = (field) => {
         const input = document.createElement('input');
         input.type = 'number';

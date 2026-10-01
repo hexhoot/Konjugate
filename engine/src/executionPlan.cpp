@@ -133,14 +133,50 @@ SharedParameters collectSharedParameters(const boost::property_tree::ptree& docu
     return shared;
 }
 
-CompiledParameter compileParameter(const boost::property_tree::ptree& parameter, const SharedParameters& shared) {
+// A shared parameter's stored schedule ("schedule": { "interpolation": "linear" | "hold",
+// "samples": [[time, value], ...] }), or null when it has none. Samples must be finite with strictly
+// increasing times; modelValidator.cpp reports the same rules as validation errors.
+std::shared_ptr<const ParameterSchedule> compileStoredSchedule(const boost::property_tree::ptree& definition) {
+    const auto stored = definition.get_child_optional("schedule");
+    if (!stored) return nullptr;
+    auto schedule = std::make_shared<ParameterSchedule>();
+    schedule->parameterId = idValue(definition, "id");
+    schedule->mode = ParameterSchedule::Mode::piecewise;
+    // Stored schedules govern from the very beginning, beneath every recorded intervention.
+    schedule->startTime = -std::numeric_limits<double>::infinity();
+    const auto interpolation = stored->get<std::string>("interpolation", "linear");
+    if (interpolation != "linear" && interpolation != "hold") throw std::runtime_error("A parameter schedule's interpolation must be linear or hold.");
+    schedule->hold = interpolation == "hold";
+    if (const auto samples = stored->get_child_optional("samples")) {
+        for (const auto& sampleItem : *samples) {
+            std::vector<double> pair;
+            for (const auto& component : sampleItem.second) pair.push_back(component.second.get_value<double>());
+            if (pair.size() != 2 || !std::isfinite(pair[0]) || !std::isfinite(pair[1])) {
+                throw std::runtime_error("A parameter schedule sample must be a pair of finite numbers [time, value].");
+            }
+            if (!schedule->samples.empty() && !(pair[0] > schedule->samples.back().first)) {
+                throw std::runtime_error("A parameter schedule's sample times must be strictly increasing.");
+            }
+            schedule->samples.emplace_back(pair[0], pair[1]);
+        }
+    }
+    if (schedule->samples.empty()) throw std::runtime_error("A parameter schedule needs at least one sample.");
+    return schedule;
+}
+
+CompiledParameter compileParameter(const boost::property_tree::ptree& parameter, const SharedParameters& shared,
+                                   std::unordered_map<EntityId, std::shared_ptr<const ParameterSchedule>>& schedules) {
     const auto id = idValue(parameter, "id");
     if (parameter.get_child_optional("sharedParameterId")) {
         const auto sharedId = idValue(parameter, "sharedParameterId");
         const auto found = shared.find(sharedId);
         if (found == shared.end()) throw std::runtime_error("A parameter links to a shared parameter that does not exist.");
         const auto& definition = *found->second;
-        return {id, definition.get<double>("value", 0), value(definition, "mode") == "live", sharedId};
+        auto cached = schedules.find(sharedId);
+        if (cached == schedules.end()) cached = schedules.emplace(sharedId, compileStoredSchedule(definition)).first;
+        CompiledParameter compiled{id, definition.get<double>("value", 0), value(definition, "mode") == "live", sharedId};
+        compiled.schedule = cached->second;
+        return compiled;
     }
     return {id, parameter.get<double>("value", 0), value(parameter, "mode") == "live", id};
 }
@@ -280,6 +316,7 @@ std::size_t CompiledExpression::operationCount() const noexcept {
 
 ExecutionPlan compileExecutionPlan(const boost::property_tree::ptree& document) {
     const auto sharedParameters = collectSharedParameters(document);
+    std::unordered_map<EntityId, std::shared_ptr<const ParameterSchedule>> storedSchedules;
     ExecutionPlan plan;
     std::unordered_map<EntityId, std::size_t> nodeIndexes;
     // A disabled node contributes no state and no contribution tasks -- exactly as if it, and
@@ -327,7 +364,7 @@ ExecutionPlan compileExecutionPlan(const boost::property_tree::ptree& document) 
                 compiledNode.nodeId, true, plan.stateIndexes, localStateIndexes, termProgrammable ? "key" : "symbol");
             if (const auto parameters = term.get_child_optional("parameters")) for (const auto& parameterItem : *parameters) {
                 const auto& parameter = parameterItem.second;
-                task.parameters.push_back(compileParameter(parameter, sharedParameters));
+                task.parameters.push_back(compileParameter(parameter, sharedParameters, storedSchedules));
             }
             if (termProgrammable) {
                 task.implementation = termImplementationKind == "cpp"
@@ -460,7 +497,7 @@ ExecutionPlan compileExecutionPlan(const boost::property_tree::ptree& document) 
                 contributionNodeId, false, plan.stateIndexes, localStateIndexes, programmable ? "key" : "symbol");
             for (const auto& parameterItem : edge.get_child("parameters")) {
                 const auto& parameter = parameterItem.second;
-                task.parameters.push_back(compileParameter(parameter, sharedParameters));
+                task.parameters.push_back(compileParameter(parameter, sharedParameters, storedSchedules));
             }
             if (programmable) {
                 task.implementation = implementationKind == "cpp"
@@ -505,6 +542,12 @@ ExecutionPlan compileExecutionPlan(const boost::property_tree::ptree& document) 
     }
     std::sort(plan.stateIds.begin(), plan.stateIds.end());
     plan.taskSubmissionOrder = planTaskSubmissionOrder(plan.nodes);
+    const auto scheduled = [](const std::vector<ContributionTask>& tasks) {
+        return std::any_of(tasks.begin(), tasks.end(), [](const auto& task) {
+            return std::any_of(task.parameters.begin(), task.parameters.end(), [](const auto& parameter) { return parameter.schedule != nullptr; });
+        });
+    };
+    for (auto& node : plan.nodes) node.hasParameterSchedules = scheduled(node.contributions) || scheduled(node.algebraicTasks);
     return plan;
 }
 
@@ -659,14 +702,15 @@ double evaluateParameterSchedule(const ParameterSchedule& schedule, double simul
         if (schedule.samples.empty()) return schedule.baseValue;
         if (simulationTime <= schedule.samples.front().first) return schedule.samples.front().second;
         if (simulationTime >= schedule.samples.back().first) return schedule.samples.back().second;
-        for (std::size_t index = 1; index < schedule.samples.size(); ++index) {
-            const auto [upperTime, upperValue] = schedule.samples[index];
-            if (simulationTime > upperTime) continue;
-            const auto [lowerTime, lowerValue] = schedule.samples[index - 1];
-            const auto fraction = upperTime > lowerTime ? (simulationTime - lowerTime) / (upperTime - lowerTime) : 0.0;
-            return lowerValue + fraction * (upperValue - lowerValue);
-        }
-        return schedule.samples.back().second;
+        // The first sample later than simulationTime (a binary search: a stored schedule may hold a
+        // year of daily samples, resolved every substep). Its predecessor is at or before it.
+        const auto upper = std::upper_bound(schedule.samples.begin(), schedule.samples.end(), simulationTime,
+            [](double time, const auto& sample) { return time < sample.first; });
+        const auto [lowerTime, lowerValue] = *(upper - 1);
+        if (schedule.hold) return lowerValue;
+        const auto [upperTime, upperValue] = *upper;
+        const auto fraction = upperTime > lowerTime ? (simulationTime - lowerTime) / (upperTime - lowerTime) : 0.0;
+        return lowerValue + fraction * (upperValue - lowerValue);
     }
     }
     return schedule.targetValue;
@@ -684,7 +728,9 @@ EntityId controlIdOf(const CompiledParameter& parameter) { return parameter.cont
 // exactly as before schedules existed, when no schedule for this parameter has started yet.
 double resolveParameterValue(const CompiledParameter& parameter, const EntityValues& liveParameterValues,
                               const std::vector<ParameterSchedule>& activeSchedules, double simulationTime) {
-    if (!parameter.live) return parameter.value;
+    // A stored schedule replaces the constant: the parameter's own value at this time.
+    const double ownValue = parameter.schedule ? evaluateParameterSchedule(*parameter.schedule, simulationTime) : parameter.value;
+    if (!parameter.live) return ownValue;
     const ParameterSchedule* active = nullptr;
     for (const auto& schedule : activeSchedules) {
         if (schedule.parameterId != controlIdOf(parameter) || schedule.startTime > simulationTime) continue;
@@ -692,7 +738,7 @@ double resolveParameterValue(const CompiledParameter& parameter, const EntityVal
     }
     if (active) return evaluateParameterSchedule(*active, simulationTime);
     const auto override = liveParameterValues.find(controlIdOf(parameter));
-    return override != liveParameterValues.end() ? override->second : parameter.value;
+    return override != liveParameterValues.end() ? override->second : ownValue;
 }
 }
 
@@ -809,7 +855,7 @@ NodeIntegrationResult integrateNode(const NodeExecutionPlan& node,
     // schedules existed) -- gated on activeSchedules being non-empty so a node with no pending
     // intervention pays zero extra allocation cost even at node.substeps in the hundreds/thousands
     // (multi-rate models like HFT order routing per docs/proposals/fintechToolbox.md).
-    const auto hasSchedules = !activeSchedules.empty();
+    const auto hasSchedules = !activeSchedules.empty() || node.hasParameterSchedules;
     auto parameterValues = resolveParameterValues(node.contributions, liveParameterValues, activeSchedules, simulationTime);
     auto algebraicParameterValues = resolveParameterValues(node.algebraicTasks, liveParameterValues, activeSchedules, simulationTime);
     for (std::size_t substep = 0; substep < node.substeps; ++substep) {

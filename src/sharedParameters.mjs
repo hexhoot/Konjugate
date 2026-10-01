@@ -25,8 +25,8 @@ export function liveControlParameterIds(document) {
     ]);
 }
 
-// A copy of the document with every link replaced by the shared definition's value, unit, mode and
-// slider range, and the shared definitions removed -- each linked parameter becomes an ordinary
+// A copy of the document with every link replaced by the shared definition's value, unit, mode,
+// slider range and stored schedule, and the shared definitions removed -- each linked parameter becomes an ordinary
 // self-contained one. Used by exports that have no runtime notion of sharing.
 export function resolveSharedParameters(document) {
     const shared = new Map((document.sharedParameters ?? []).map((parameter) => [parameter.id, parameter]));
@@ -42,6 +42,10 @@ export function resolveSharedParameters(document) {
         parameter.mode = definition.mode;
         if (definition.control) parameter.control = structuredClone(definition.control);
         else delete parameter.control;
+        // A stored schedule travels with the baked value; scheduleKey lets an export emit one table
+        // for every parameter linked to the same shared one.
+        if (definition.schedule) Object.assign(parameter, { schedule: structuredClone(definition.schedule), scheduleKey: definition.id });
+        else { delete parameter.schedule; delete parameter.scheduleKey; }
     };
     for (const edge of resolved.edges ?? []) (edge.parameters ?? []).forEach(bake);
     for (const node of resolved.nodes ?? []) for (const term of node.sourceTerms ?? []) (term.parameters ?? []).forEach(bake);

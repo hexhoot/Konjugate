@@ -235,7 +235,11 @@ export async function runInteractionTests(driver) {
             passedCount += 1;
             console.log(`✓ ${name}`);
         } catch (error) {
-            error.message = `${name}: ${error.message}`;
+            // Some errors (Electron's own "Script failed to execute") ignore a changed message, which
+            // would leave the failure unnamed: wrap those instead, keeping the original as the cause.
+            const named = `${name}: ${error?.message ?? error}`;
+            try { error.message = named; } catch { /* read-only */ }
+            if (error?.message !== named) throw new Error(named, { cause: error });
             throw error;
         }
     };
@@ -644,7 +648,14 @@ export async function runInteractionTests(driver) {
         })()`);
         assert.equal(await evaluate(window, `document.querySelector('#runConfigurationDialog').open`), false);
         assert.equal(await evaluate(window, `document.querySelectorAll('#runPartitionAlgorithm option').length`), 3);
-        await evaluate(window, `[...document.querySelectorAll('.objectLabel')].find((label) => label.textContent.includes('Battery module')).click(); document.querySelector('[data-node-tab="numerics"]').click()`);
+        // Applying the run configuration revalidates the model, which can rebuild the canvas labels: wait for
+        // the node's label, then for its editor, rather than assuming both are there at once.
+        const batteryLabel = `[...document.querySelectorAll('.objectLabel')].find((label) => label.textContent.includes('Battery module'))`;
+        await waitFor(window, `Boolean(${batteryLabel})`, 'The Battery module label was not on the canvas.');
+        await evaluate(window, `${batteryLabel}.click()`);
+        await waitFor(window, `Boolean(document.querySelector('[data-node-tab="numerics"]')) && !document.querySelector('#nodeEditor').classList.contains('hidden')`, 'The node editor did not open.');
+        await evaluate(window, `document.querySelector('[data-node-tab="numerics"]').click()`);
+        await waitFor(window, `document.querySelector('#editNodeSubsteps').offsetParent !== null`, 'The numerics tab did not open.');
         await evaluate(window, `(() => { const input = document.querySelector('#editNodeSubsteps'); input.value = '2'; input.dispatchEvent(new Event('change', { bubbles: true })); })()`);
         assert.equal(await evaluate(window, `document.querySelector('#editNodeSubsteps').value`), '2');
         assert.match(await evaluate(window, `document.querySelector('#nodeEffectiveTimeStep').textContent`), /0\.01/);
@@ -2937,9 +2948,11 @@ export async function runInteractionTests(driver) {
         assert.equal(await evaluate(window, `document.querySelector('#groupEquationDiagnostics').classList.contains('valid')`), true);
 
         await waitFor(window, `Boolean(${bundleLabel('Group test A')})`, 'A mesh edge bundle label was not available.');
+        // Whole pixels: the camera's damping can keep a freshly framed label creeping by fractions of
+        // a pixel for longer than the wait, which never matters for the click that follows.
         await waitForStableRect(window,
-            `(() => { const el = ${bundleLabel('Group test A')}; const rect = el?.getBoundingClientRect(); return rect && JSON.stringify(rect); })()`,
-            'The mesh edge bundle label did not settle into a stable position.');
+            `(() => { const el = ${bundleLabel('Group test A')}; const rect = el?.getBoundingClientRect(); return rect && JSON.stringify([rect.left, rect.top, rect.width, rect.height].map(Math.round)); })()`,
+            'The mesh edge bundle label did not settle into a stable position.', 6000);
         // The bundle label's naive center point can be occluded by one of its own endpoint
         // nodes' labels at this camera framing (confirmed: document.elementFromPoint() there
         // resolves to the node's objectLabel, not the bundle label) -- find a point within the

@@ -20,7 +20,9 @@ const allowedPermissions = new Set([
 
 // Optional behaviours a launcher may depend on. A launcher lists the ones it needs in `requires`, and a version of Konjugate that does not
 // know one of them refuses the launcher, rather than ignoring the entry and running it without what it needs.
-export const launcherFeatures = new Set(['scenarioOverrides', 'runRecord', 'projectSession']);
+// parameterSchedules: the engine follows a shared parameter's stored schedule (docs/projectSchema.md),
+// so a launcher whose importer writes schedules can refuse a version that would run them as constants.
+export const launcherFeatures = new Set(['scenarioOverrides', 'runRecord', 'projectSession', 'parameterSchedules']);
 const launcherPermissions = new Set(['data.import', 'scenario.run', 'model.open', 'results.export', 'pages.open', 'analysis.infer', 'network.fetch', 'project.data']);
 const contributionIdPattern = /^[a-z][A-Za-z0-9]*$/;
 

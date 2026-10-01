@@ -355,3 +355,52 @@ test('algebraic terms that bind every state of their node are ordered by the sta
         assert.ok(assign(1) < assign(2), `${kind}: y must be computed before z, which uses it.`);
     }
 });
+
+// A shared parameter with a stored schedule (sharedParameters[].schedule).
+function scheduledModel(schedule) {
+    const document = baseDocument();
+    const nodeId = id();
+    const stateId = id();
+    const algebraicId = id();
+    document.sharedParameters = [{ id: 500, name: 'Rate', symbol: 'rate', value: 9, mode: 'constant', schedule }];
+    const linked = () => ({ id: id(), name: 'Rate', symbol: 'r', value: 0, mode: 'constant', sharedParameterId: 500 });
+    const derivativeParameter = linked();
+    const algebraicParameter = linked();
+    document.nodes.push({
+        id: nodeId, name: 'Tank',
+        states: [{ id: stateId, name: 'Level', symbol: 'level', initialValue: 0, unit: '' }, { id: algebraicId, name: 'Shown', symbol: 'shown', initialValue: 0, unit: '' }],
+        sourceTerms: [
+            { id: id(), state: 'level', expression: '', parameters: [derivativeParameter],
+                expressionModel: { latex: '', bindings: [{ kind: 'parameter', parameterId: derivativeParameter.id, symbol: 'r' }], output: { stateId }, mathJson: 'r' } },
+            { id: id(), state: 'shown', expression: '', setsValue: true, parameters: [algebraicParameter],
+                expressionModel: { latex: '', bindings: [{ kind: 'parameter', parameterId: algebraicParameter.id, symbol: 'r' }], output: { stateId: algebraicId }, mathJson: 'r' } }
+        ]
+    });
+    return document;
+}
+
+test('a scheduled parameter is read from one table at the instant the engine reads it, in either language', () => {
+    const document = scheduledModel({ interpolation: 'hold', samples: [[0, 1], [10, 3]] });
+    const cpp = generateStandaloneProgram(document, 'cpp');
+    assert.match(cpp, /const double scheduleTimes0\[\] = \{ 0, 10 \};/);
+    assert.match(cpp, /const double scheduleValues0\[\] = \{ 1, 3 \};/);
+    assert.match(cpp, /\{ scheduleTimes0, scheduleValues0, 2, true \}/);
+    assert.doesNotMatch(cpp, /scheduleTimes1/, 'two parameters linked to one shared parameter share one table');
+    assert.match(cpp, /double contributionValue = scheduleValue\(0, stepTime\);/);
+    assert.match(cpp, /const double algebraicValue = scheduleValue\(0, algebraicTime\);/);
+    balanced(cpp, /\{/g, /\}/g);
+    const python = generateStandaloneProgram(document, 'python');
+    assert.match(python, /^import bisect$/m);
+    assert.match(python, /\(True, \[0\.0, 10\.0\], \[1\.0, 3\.0\]\),  # r$/m);
+    assert.match(python, /contribution_value = schedule_value\(0, step_time\)/);
+    assert.match(python, /algebraic_value = schedule_value\(0, algebraic_time\)/);
+    // No schedule, no table or import.
+    assert.doesNotMatch(generateStandaloneProgram(singleNodeSourceTermModel(), 'cpp'), /scheduleValue/);
+    assert.doesNotMatch(generateStandaloneProgram(singleNodeSourceTermModel(), 'python'), /import bisect/);
+});
+
+test('a malformed schedule blocks export with the parameter named', () => {
+    for (const schedule of [{ interpolation: 'cubic', samples: [[0, 1]] }, { samples: [] }, { samples: [[0, 1], [0, 2]] }, { samples: [[0, Infinity]] }]) {
+        assert.throws(() => generateStandaloneProgram(scheduledModel(schedule), 'cpp'), /"Rate"/);
+    }
+});

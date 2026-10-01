@@ -338,3 +338,9 @@ test('a launcher may ask for project.data and require projectSession', () => {
     manifest.requires = ['projectSession'];
     assert.doesNotThrow(() => validateAddonManifest(manifest));
 });
+
+test('a launcher may require parameterSchedules', () => {
+    const manifest = launcher();
+    manifest.requires = ['parameterSchedules'];
+    assert.doesNotThrow(() => validateAddonManifest(manifest));
+});
