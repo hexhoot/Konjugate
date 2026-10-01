@@ -71,6 +71,8 @@ contextBridge.exposeInMainWorld('extensions', {
     // The Explorer's "Discover" side (see docs/addonExplorer.md).
     discoverRegistry: () => ipcRenderer.invoke('packageDiscoverRegistry'),
     installFromRegistry: (entry, namespaces) => ipcRenderer.invoke('packageInstallFromRegistry', { entry, namespaces }),
+    // An entry's image as a data: URL, or null (see the packageRegistryImage handler in src/main.mjs).
+    registryImage: (prefix) => ipcRenderer.invoke('packageRegistryImage', prefix),
     // Separate from applicationInfo.openExternal's fixed allowlist -- a registry entry's own links
     // point at whatever a third-party publisher declared, so this confirms with the person first
     // instead (see the matching handler in src/main.mjs).

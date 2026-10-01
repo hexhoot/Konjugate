@@ -11,6 +11,7 @@
     "license": "MPL-2.0",
     "domain": "examples",
     "url": "https://github.com/zenineasa/Konjugate-HelloWorld",
+    "image": "images/konjugate.helloWorld.webp",
     "packages": [
         { "packageType": "addon", "packageId": "konjugate.helloWorld" }
     ],

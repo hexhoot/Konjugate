@@ -261,18 +261,21 @@ packageMacos: checkPackaging iconsMacos engine
 	node scripts/checkThirdPartyNoticeCoverage.mjs
 	node scripts/verifyPackagingNotices.mjs \
 		$(packageDir)/$(appName)-darwin-$(hostArch)/$(appName).app/Contents/Resources
+	node scripts/verifyPackagedRegistry.mjs $(packageDir)/$(appName)-darwin-$(hostArch)/$(appName).app/Contents/Resources
 
 packageWindows: checkPackaging iconsWindows engine
 	node scripts/packageElectron.mjs win32 $(hostArch) $(appVersion) $(iconDir)/app.ico $(appName)
 	node scripts/checkThirdPartyNoticeCoverage.mjs
 	node scripts/verifyPackagingNotices.mjs \
 		$(packageDir)/$(appName)-win32-$(hostArch)/resources
+	node scripts/verifyPackagedRegistry.mjs $(packageDir)/$(appName)-win32-$(hostArch)/resources
 
 packageLinux: checkPackaging iconsPng engine
 	node scripts/packageElectron.mjs linux $(hostArch) $(appVersion) $(iconDir)/app.png $(appName)
 	node scripts/checkThirdPartyNoticeCoverage.mjs
 	node scripts/verifyPackagingNotices.mjs \
 		$(packageDir)/$(appName)-linux-$(hostArch)/resources
+	node scripts/verifyPackagedRegistry.mjs $(packageDir)/$(appName)-linux-$(hostArch)/resources
 
 distributable:
 ifeq ($(hostPlatform),darwin)

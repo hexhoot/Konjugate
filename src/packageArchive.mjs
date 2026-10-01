@@ -390,6 +390,9 @@ export function verifyPackageArchive(archive, { namespaces } = {}) {
 const namespaceEntryFormat = 'konjugate-namespace-entry';
 const namespaceEntryFormatVersion = 1;
 const packageTypes = ['addon', 'plugin'];
+// An entry's image (see validateNamespaceEntry) lives beside the entries themselves, in the
+// registry's own images/ directory: one file, no subdirectories, PNG/JPEG/WebP.
+export const registryImagePathPattern = /^images\/[\w-][\w.-]*\.(png|jpe?g|webp)$/i;
 
 // Every field beyond owner/contact/publicKeys is optional -- an entry with only those three is a
 // prefix reserved for private/internal use, not listed anywhere; loadNamespaceRegistry accepts it
@@ -408,6 +411,12 @@ export function validateNamespaceEntry(entry, prefix) {
     }
     for (const optional of ['title', 'description', 'license', 'commercialLicenseUrl', 'domain', 'url', 'downloadUrl']) {
         if (entry[optional] !== undefined && (typeof entry[optional] !== 'string' || !entry[optional])) invalid(`${optional}, if present, must be a non-empty string.`);
+    }
+    // Kept in the registry next to the entry rather than in the publisher's own repository, so the
+    // picture is reviewed in the same pull request as the entry and can't be swapped out afterwards,
+    // and so the copy bundled with the app can be shown without any network access at all.
+    if (entry.image !== undefined && (typeof entry.image !== 'string' || !registryImagePathPattern.test(entry.image) || entry.image.includes('..'))) {
+        invalid('image, if present, must name a .png, .jpg, .jpeg or .webp file in the registry\'s images/ directory, e.g. "images/example.fintech.webp".');
     }
     // Surfaced in the Welcome window's one-time starter-pack offer (see the Recommended add-ons
     // section of docs/addonExplorer.md) -- meaningless on an entry with nothing to install, so it

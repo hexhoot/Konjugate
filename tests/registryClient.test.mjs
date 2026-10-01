@@ -1,13 +1,13 @@
 /* Copyright © 2026 Zenin Easa Panthakkalakath */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { strToU8, zipSync } from 'fflate';
-import { createPackageArchive, listInstalledPackages, PackageArchiveError } from '../src/packageArchive.mjs';
-import { fetchLatestReleaseVersion, fetchRemoteRegistry, installFromRegistryEntry, isNewerVersion, RegistryClientError } from '../src/registryClient.mjs';
+import { createPackageArchive, listInstalledPackages, loadNamespaceRegistry, PackageArchiveError } from '../src/packageArchive.mjs';
+import { fetchLatestReleaseVersion, fetchRegistryImage, fetchRemoteRegistry, identifyRegistryImage, installFromRegistryEntry, isNewerVersion, registryImageMaxBytes, registryImageUrl, RegistryClientError } from '../src/registryClient.mjs';
 
 // A minimal but real .kja, built the same way tests/packageArchive.test.mjs does.
 function addonArchive(packageId = 'example.fintech.toolbox', version = '0.1.0') {
@@ -262,4 +262,48 @@ test('installFromRegistryEntry replaces an older installed version rather than i
     } finally {
         await rm(directory, { recursive: true, force: true });
     }
+});
+
+const imageEntry = { image: 'images/example.fintech.webp' };
+const imageUrl = 'https://raw.githubusercontent.com/zenineasa/Konjugate/master/registry/images/example.fintech.webp';
+const pngHeader = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+test('registryImageUrl resolves against the registry repository, or beside an alternate registry URL', () => {
+    assert.equal(registryImageUrl(imageEntry, { registryUrl: '' }), imageUrl);
+    assert.equal(registryImageUrl(imageEntry, { registryUrl: '', owner: 'example', repo: 'Mirror', ref: 'main' }),
+        'https://raw.githubusercontent.com/example/Mirror/main/registry/images/example.fintech.webp');
+    assert.equal(registryImageUrl(imageEntry, { registryUrl: 'https://mirror.example.org/konjugate/registry.json' }),
+        'https://mirror.example.org/konjugate/images/example.fintech.webp');
+    assert.equal(registryImageUrl({}, { registryUrl: '' }), null);
+    assert.equal(registryImageUrl({ image: '../secrets.png' }, { registryUrl: '' }), null);
+});
+
+test('identifyRegistryImage recognises PNG, JPEG and WebP by their bytes, not the file name', () => {
+    assert.equal(identifyRegistryImage(new Uint8Array(pngHeader)), 'image/png');
+    assert.equal(identifyRegistryImage(new Uint8Array([0xff, 0xd8, 0xff, 0xe0])), 'image/jpeg');
+    assert.equal(identifyRegistryImage(new Uint8Array([...strToU8('RIFF'), 0, 0, 0, 0, ...strToU8('WEBPVP8 ')])), 'image/webp');
+    assert.throws(() => identifyRegistryImage(strToU8('<svg onload="alert(1)"></svg>')), (error) => error.code === 'INVALID_IMAGE');
+    const oversized = new Uint8Array(registryImageMaxBytes + 1);
+    oversized.set(pngHeader);
+    assert.throws(() => identifyRegistryImage(oversized), (error) => error.code === 'IMAGE_TOO_LARGE');
+});
+
+test('fetchRegistryImage downloads and checks an entry\'s image', async () => {
+    const result = await fetchRegistryImage(imageEntry, { registryUrl: '', fetchImpl: fakeFetch({ [imageUrl]: bytesResponse(new Uint8Array(pngHeader)) }) });
+    assert.equal(result.mimeType, 'image/png');
+    await assert.rejects(() => fetchRegistryImage({}, { registryUrl: '' }), (error) => error instanceof RegistryClientError && error.code === 'NO_IMAGE');
+    await assert.rejects(() => fetchRegistryImage(imageEntry, { registryUrl: '', fetchImpl: fakeFetch({ [imageUrl]: bytesResponse(new Uint8Array(), { ok: false, status: 404 }) }) }),
+        (error) => error.code === 'DOWNLOAD_FAILED');
+    await assert.rejects(() => fetchRegistryImage(imageEntry, { registryUrl: '', fetchImpl: fakeFetch({ [imageUrl]: bytesResponse(strToU8('not an image')) }) }),
+        (error) => error.code === 'INVALID_IMAGE');
+});
+
+// The real registry this repository ships: every image an entry names exists and passes the same
+// checks the app applies, and nothing in images/ is left unreferenced (and so shipped for nothing).
+test('the bundled registry\'s images all exist, are valid and are referenced', async () => {
+    const { prefixes } = await loadNamespaceRegistry('registry');
+    const referenced = Object.values(prefixes).map((entry) => entry.image).filter(Boolean);
+    for (const image of referenced) identifyRegistryImage(new Uint8Array(await readFile(join('registry', image))), image);
+    const shipped = (await readdir(join('registry', 'images')).catch(() => [])).filter((name) => !name.startsWith('.')).map((name) => `images/${name}`);
+    assert.deepEqual(shipped.filter((name) => !referenced.includes(name)), []);
 });

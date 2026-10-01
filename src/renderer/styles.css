@@ -198,6 +198,21 @@ input, select, textarea { user-select: text; }
    description (registryDescriptionFor) -- same shape of content either way. */
 .extensionsItemDescription { display: -webkit-box; margin: 0; overflow: hidden; color: #8199a3; font-size: 7.5px; line-height: 1.5; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .discoverItemBadges { display: flex; gap: 4px; margin-bottom: 3px; }
+/* Extensions lists are a single column, so an item's thumbnail sits beside its text rather than
+   above it the way an Examples item's does; the detail pane shows the same image full width. */
+.extensionsItemWithThumb { grid-template-columns: 72px 1fr; column-gap: 9px; row-gap: 3px; }
+.extensionsItemWithThumb > * { grid-column: 2; }
+.extensionsItemWithThumb > .extensionsThumb { grid-column: 1; grid-row: 1 / span 4; align-self: start; }
+.extensionsItemWithThumb .discoverItemBadges { margin-bottom: 0; }
+.extensionsThumb { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #060d12; border-radius: 3px; }
+.extensionsThumbPlaceholder { display: flex; align-items: center; justify-content: center; color: rgb(66 201 188 / 55%); background: radial-gradient(circle at 30% 25%, rgb(66 201 188 / 12%), transparent 65%), #060d12; font-size: 13px; font-weight: 700; }
+/* Images arrive a moment after their item renders, so they fade in rather than pop. */
+img.extensionsThumb, .extensionsDetailImage { opacity: 0; transition: opacity 160ms ease; }
+img.extensionsThumb.loaded, .extensionsDetailImage.loaded { opacity: 1; }
+.extensionsDetailImage { aspect-ratio: 16 / 9; }
+@media (prefers-reduced-motion: reduce) {
+    img.extensionsThumb, .extensionsDetailImage { transition: none; }
+}
 .extensionsItemMeta { display: block; margin-top: 2px; color: #647984; font-size: 7px; }
 #extensionsRestartNotice { margin-top: 8px; }
 .extensionsRestartPendingNotice { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 8px 10px; color: #d6a35f; background: rgb(214 163 95 / 8%); border: 1px solid #4a3f2e; border-radius: 5px; font-size: 8px; }

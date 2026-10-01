@@ -25,7 +25,9 @@ test('Electron Packager excludes build-only top-level directories', async () => 
         assert.equal(shouldIgnorePackagePath(`/prefix-${directory}/file`), false);
     }
 
-    for (const packagedPath of ['/package.json', '/src/main.mjs', '/protocol/schema.json']) {
+    // registry/ is Discover's offline fallback and registry/images/ the pictures it shows without
+    // any network access (see scripts/verifyPackagedRegistry.mjs, which checks the packaged copy).
+    for (const packagedPath of ['/package.json', '/src/main.mjs', '/protocol/schema.json', '/registry', '/registry/konjugate.fintech.json', '/registry/images', '/registry/images/konjugate.fintech.webp']) {
         assert.equal(shouldIgnorePackagePath(packagedPath), false);
     }
 });

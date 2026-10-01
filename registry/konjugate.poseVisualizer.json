@@ -12,6 +12,7 @@
     "domain": "robotics",
     "recommended": true,
     "url": "https://github.com/zenineasa/Konjugate-PoseVisualizer",
+    "image": "images/konjugate.poseVisualizer.webp",
     "packages": [
         { "packageType": "addon", "packageId": "konjugate.poseVisualizer" }
     ],

@@ -2,9 +2,9 @@
 
 import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, screen, shell } from 'electron';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readdirSync } from 'node:fs';
-import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -36,7 +36,7 @@ import { auxiliaryWindowPresentation, auxiliaryWindowBounds } from './windowLife
 import { parseKjtPathFromArgv } from './fileAssociation.mjs';
 import { listDiagnostics, onDiagnostic, recordDiagnostic } from './diagnosticsLog.mjs';
 import { inspectPackageArchive, installPackageArchive, listInstalledPackages, loadNamespaceRegistry, packageKey, uninstallPackage } from './packageArchive.mjs';
-import { fetchLatestReleaseVersion, fetchRemoteRegistry, installFromRegistryEntry, isNewerVersion } from './registryClient.mjs';
+import { fetchLatestReleaseVersion, fetchRegistryImage, fetchRemoteRegistry, identifyRegistryImage, installFromRegistryEntry, isNewerVersion, registryImageUrl } from './registryClient.mjs';
 import { inspectFmuArchive, installFmuArchive, listInstalledFmus, uninstallFmu } from './fmuPackage.mjs';
 import { createExtensionStateStore } from './extensionStateStore.mjs';
 import { exampleCatalogEntry, exampleIdFromFileName, exampleLabel } from './exampleCatalog.mjs';
@@ -1365,6 +1365,70 @@ async function discoverableRegistry() {
 }
 
 ipcMain.handle('packageDiscoverRegistry', () => discoverableRegistry());
+
+// An entry's optional image (see docs/registry.md), handed to the renderer as a data: URL: its
+// Content-Security-Policy only allows img-src 'self' data:, and keeping it that way means no remote
+// host can ever be loaded into the project window directly. The renderer passes only a prefix; the
+// image path is looked up in this process's own cached/bundled registry, so the renderer can't make
+// this read an arbitrary file or URL.
+//
+// Images ship in registry/images/ alongside the bundled entries, so anything this release knows
+// about is read straight from disk -- offline, and with no request at all. Only an entry published
+// after this release (or one whose image was renamed since) is downloaded, then kept on disk for a
+// day, and past that still used while offline.
+const registryImageCacheDirectory = () => join(app.getPath('userData'), 'registryImages');
+const registryImageMaxAgeMs = 24 * 60 * 60 * 1000;
+const registryImageExtensions = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
+const toImageDataUrl = (mimeType, bytes) => `data:${mimeType};base64,${Buffer.from(bytes).toString('base64')}`;
+async function knownRegistryEntry(prefix) {
+    try {
+        const cached = JSON.parse(await readFile(registryCachePath(), 'utf8'));
+        if (Object.hasOwn(cached.prefixes ?? {}, prefix)) return cached.prefixes[prefix];
+    } catch {
+        // No cache yet -- fall through to the bundled copy.
+    }
+    const bundled = await loadBundledRegistry();
+    return Object.hasOwn(bundled.prefixes, prefix) ? bundled.prefixes[prefix] : null;
+}
+async function bundledRegistryImage(entry) {
+    try {
+        const bytes = await readFile(join(bundledRegistryDir, entry.image));
+        return toImageDataUrl(identifyRegistryImage(bytes, entry.image), bytes);
+    } catch {
+        return null;
+    }
+}
+ipcMain.handle('packageRegistryImage', async (_event, prefix) => {
+    if (typeof prefix !== 'string') return null;
+    const entry = await knownRegistryEntry(prefix);
+    const url = entry && registryImageUrl(entry);
+    if (!url) return null;
+    const bundled = await bundledRegistryImage(entry);
+    if (bundled) return bundled;
+    // Named after the URL as well as the prefix, so pointing image at a different file is never
+    // answered from the previous file's cache.
+    const baseName = `${prefix}-${createHash('sha256').update(url).digest('hex').slice(0, 16)}`;
+    const directory = registryImageCacheDirectory();
+    const cachedName = (await readdir(directory).catch(() => [])).find((name) => name.startsWith(`${baseName}.`));
+    const readCached = async () => {
+        const bytes = await readFile(join(directory, cachedName));
+        return toImageDataUrl(identifyRegistryImage(bytes, cachedName), bytes);
+    };
+    if (cachedName && Date.now() - (await stat(join(directory, cachedName))).mtimeMs < registryImageMaxAgeMs) return readCached();
+    try {
+        const { mimeType, bytes } = await fetchRegistryImage(entry);
+        await mkdir(directory, { recursive: true });
+        const name = `${baseName}.${registryImageExtensions[mimeType]}`;
+        const temporaryPath = join(directory, `${name}.${randomUUID()}.tmp`);
+        await writeFile(temporaryPath, bytes);
+        await rename(temporaryPath, join(directory, name));
+        if (cachedName && cachedName !== name) await unlink(join(directory, cachedName)).catch(() => {});
+        return toImageDataUrl(mimeType, bytes);
+    } catch (error) {
+        console.warn(`Could not fetch the registry image for ${prefix}:`, error.message);
+        return cachedName ? readCached().catch(() => null) : null;
+    }
+});
 
 // entry comes from whatever packageDiscoverRegistry last returned to this renderer -- not
 // re-fetched here, so what gets installed is exactly what the user saw when they clicked Install,

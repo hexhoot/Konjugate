@@ -8,7 +8,7 @@
 // way -- with a fake fetchImpl, no real network access, no Electron.
 
 import { unzipSync } from 'fflate';
-import { buildNamespaceRegistry, inspectPackageArchive, installPackageArchive, verifyPackageArchive } from './packageArchive.mjs';
+import { buildNamespaceRegistry, inspectPackageArchive, installPackageArchive, registryImagePathPattern, verifyPackageArchive } from './packageArchive.mjs';
 
 export class RegistryClientError extends Error {
     constructor(message, code) {
@@ -130,6 +130,55 @@ export async function installFromRegistryEntry(entry, { namespaces, directory, o
         });
     }
     return results;
+}
+
+// ---- Entry images (see the image field in docs/registry.md)
+//
+// An entry's image sits in the registry's own images/ directory, so it's resolved against the same
+// registry location fetchRemoteRegistry reads: next to an alternate registry URL's JSON file, or in
+// the registry repository's registry/ directory on raw.githubusercontent.com.
+export function registryImageUrl(entry, {
+    registryUrl = process.env.KONJUGATE_REGISTRY_URL,
+    owner = process.env.KONJUGATE_REGISTRY_OWNER || defaultOwner,
+    repo = process.env.KONJUGATE_REGISTRY_REPO || defaultRepo,
+    ref = process.env.KONJUGATE_REGISTRY_REF || defaultRef
+} = {}) {
+    if (typeof entry?.image !== 'string' || !registryImagePathPattern.test(entry.image)) return null;
+    if (registryUrl) return new URL(entry.image, registryUrl).href;
+    return `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(ref)}/registry/${entry.image}`;
+}
+
+// Identified by their leading bytes rather than a file extension or a response's Content-Type,
+// either of which could claim anything.
+const registryImageSignatures = [
+    { mimeType: 'image/png', matches: (bytes) => bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 },
+    { mimeType: 'image/jpeg', matches: (bytes) => bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff },
+    { mimeType: 'image/webp', matches: (bytes) => String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF' && String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP' }
+];
+// Every bundled image ships inside the app download, so this is kept deliberately small; see
+// docs/registry.md for the recommended size and format.
+export const registryImageMaxBytes = 512 * 1024;
+
+// The image's MIME type, after checking it's a PNG, JPEG or WebP no larger than
+// registryImageMaxBytes. Shared by bundled images read from disk and downloaded ones, so both pass
+// the same checks. Throws RegistryClientError otherwise.
+export function identifyRegistryImage(bytes, source = 'The image') {
+    if (bytes.byteLength > registryImageMaxBytes) throw new RegistryClientError(`${source} is larger than ${registryImageMaxBytes / 1024} KB.`, 'IMAGE_TOO_LARGE');
+    const signature = registryImageSignatures.find((candidate) => candidate.matches(bytes));
+    if (!signature) throw new RegistryClientError(`${source} is not a PNG, JPEG or WebP image.`, 'INVALID_IMAGE');
+    return signature.mimeType;
+}
+
+// Returns { mimeType, bytes } for entry.image, downloaded from registryImageUrl. Throws
+// RegistryClientError for an entry without one, a failed download, or a file
+// identifyRegistryImage rejects.
+export async function fetchRegistryImage(entry, { fetchImpl = fetch, ...location } = {}) {
+    const url = registryImageUrl(entry, location);
+    if (!url) throw new RegistryClientError('This registry entry has no image.', 'NO_IMAGE');
+    const response = await fetchImpl(url);
+    if (!response.ok) throw new RegistryClientError(`Could not download ${url} (HTTP ${response.status}).`, 'DOWNLOAD_FAILED');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return { mimeType: identifyRegistryImage(bytes, url), bytes };
 }
 
 // ---- Update checking (see the Recommended add-ons/Update checking notes in docs/addonExplorer.md)

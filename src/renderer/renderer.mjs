@@ -9247,9 +9247,15 @@ function renderExtensionsResults() {
         const update = updateInfoFor(entry.packageId);
         const meta = `${escapeHtml(entry.version)} · ${entry.source === 'bundled' ? 'Bundled' : 'Installed'}${entry.enabled ? '' : ' · Disabled'}${update ? ` · Update to ${escapeHtml(update.latestVersion)} available` : ''}`;
         const description = registryDescriptionFor(entry.packageId);
-        button.innerHTML = `<b>${escapeHtml(entry.name)}</b>`
+        // FMUs are imported files with no registry entry to borrow an image from, so they keep the
+        // plain text-only item rather than a column of identical placeholders.
+        const hasThumb = entry.packageType !== 'fmu';
+        button.classList.toggle('extensionsItemWithThumb', hasThumb);
+        button.innerHTML = (hasThumb ? extensionsThumbHtml(entry.name) : '')
+            + `<b>${escapeHtml(entry.name)}</b>`
             + (description ? `<p class="extensionsItemDescription">${escapeHtml(description)}</p>` : '')
             + `<span class="extensionsItemMeta">${meta}</span>`;
+        if (hasThumb) attachExtensionsImage(button, registryEntryFor(entry.packageId));
         return button;
     }));
     $('#extensionsEmpty').textContent = extensionsTab === 'addon' ? 'No add-ons are installed.'
@@ -9266,6 +9272,8 @@ function renderExtensionsDetail() {
     $('#extensionsDetailBadge').textContent = entry.source === 'bundled' ? 'Bundled' : 'Installed';
     $('#extensionsDetailBadge').classList.toggle('bundled', entry.source === 'bundled');
     $('#extensionsDetailEnabledBadge').hidden = entry.enabled;
+    const selectedKey = extensionsSelectedKey;
+    showExtensionsDetailImage($('#extensionsDetailImage'), registryEntryFor(entry.packageId), () => extensionsSelectedKey === selectedKey);
     $('#extensionsDetailTitle').textContent = entry.name;
     $('#extensionsDetailId').textContent = entry.packageId;
     $('#extensionsDetailVersion').textContent = entry.version;
@@ -9359,6 +9367,61 @@ function bundleWarningFor(entry, verb) {
     return `It's part of the ${bundleEntry.title || bundleEntry.prefix} bundle -- ${verb} it will leave ${installedSiblingIds.join(', ')} without its counterpart.`;
 }
 
+// prefix -> Promise of a data: URL (or null), fetched once per window through the main
+// process (see packageRegistryImage in src/main.mjs) and only for entries that declare an image.
+const discoverImages = new Map();
+function discoverImageFor(entry) {
+    if (!entry.image || !window.extensions.registryImage) return Promise.resolve(null);
+    if (!discoverImages.has(entry.prefix)) {
+        discoverImages.set(entry.prefix, window.extensions.registryImage(entry.prefix).catch((error) => {
+            console.warn(`Could not load the image for ${entry.prefix}:`, error);
+            return null;
+        }));
+    }
+    return discoverImages.get(entry.prefix);
+}
+
+// The registry entry (if any) that lists packageId -- a single-package entry as well as a bundle,
+// unlike registryBundleFor above. Lets an installed package borrow its entry's image.
+function registryEntryFor(packageId) {
+    return discoverEntries.find((entry) => entry.packages.some((declared) => declared.packageId === packageId)) ?? null;
+}
+
+// A list item's thumbnail: the entry's initial straight away, swapped for its image once (and if)
+// one arrives, so the list never waits on images and an entry without one still looks deliberate
+// rather than broken. Shared by Discover's items and Installed's add-on/plugin items.
+function extensionsThumbHtml(title) {
+    const initial = (title || '?').replace(/^Konjugate\s+/i, '').trim().charAt(0).toUpperCase() || '?';
+    return `<span class="extensionsThumb extensionsThumbPlaceholder" aria-hidden="true">${escapeHtml(initial)}</span>`;
+}
+function attachExtensionsImage(container, entry) {
+    if (!entry) return;
+    discoverImageFor(entry).then((imageUrl) => {
+        const placeholder = container.querySelector('.extensionsThumbPlaceholder');
+        if (!imageUrl || !placeholder) return;
+        const image = document.createElement('img');
+        image.className = 'extensionsThumb';
+        image.alt = '';
+        image.addEventListener('load', () => image.classList.add('loaded'), { once: true });
+        image.src = imageUrl;
+        placeholder.replaceWith(image);
+    });
+}
+// The detail pane's cover image, cleared first so a previous selection's never lingers, and only
+// filled in if the same item is still selected once the image arrives.
+function showExtensionsDetailImage(image, entry, isStillSelected) {
+    image.hidden = true;
+    image.classList.remove('loaded');
+    image.removeAttribute('src');
+    if (!entry) return;
+    discoverImageFor(entry).then((imageUrl) => {
+        if (!imageUrl || !isStillSelected()) return;
+        image.addEventListener('load', () => image.classList.add('loaded'), { once: true });
+        image.src = imageUrl;
+        image.hidden = false;
+    });
+}
+
 function discoverEntryList(registry) {
     // Only entries that actually offer something to install belong in the Explorer -- a
     // reservation-only entry (identity fields but no packages/downloadUrl) is real per the
@@ -9412,10 +9475,13 @@ function renderDiscoverResults() {
         // actually contains, not necessarily just one.
         const typeBadges = [...new Set(entry.packages.map((declared) => declared.packageType))].sort()
             .map((type) => `<span class="extensionsBadge">${type}</span>`).join('');
-        button.innerHTML = `<div class="discoverItemBadges">${typeBadges}</div>`
+        button.classList.add('extensionsItemWithThumb');
+        button.innerHTML = extensionsThumbHtml(entry.title || entry.prefix)
+            + `<div class="discoverItemBadges">${typeBadges}</div>`
             + `<b>${escapeHtml(entry.title || entry.prefix)}</b>`
             + (entry.description ? `<p class="extensionsItemDescription">${escapeHtml(entry.description)}</p>` : '')
             + (metaParts.length ? `<span class="extensionsItemMeta">${escapeHtml(metaParts.join(' · '))}</span>` : '');
+        attachExtensionsImage(button, entry);
         return button;
     }));
     $('#extensionsEmpty').textContent = 'No add-ons match the registry filters.';
@@ -9428,6 +9494,8 @@ function renderDiscoverDetail() {
     $('#extensionsDetailEmpty').hidden = Boolean(entry);
     $('#extensionsDiscoverDetailContent').hidden = !entry;
     if (!entry) return;
+
+    showExtensionsDetailImage($('#extensionsDiscoverDetailImage'), entry, () => discoverSelectedPrefix === entry.prefix);
 
     const domainBadge = $('#extensionsDiscoverDetailDomain');
     if (entry.domain) {

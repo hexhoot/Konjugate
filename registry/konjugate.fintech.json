@@ -12,6 +12,7 @@
     "commercialLicenseUrl": "https://github.com/zenineasa/Konjugate-Fintech/blob/main/COMMERCIAL-LICENSE.md",
     "domain": "finance",
     "url": "https://github.com/zenineasa/Konjugate-Fintech",
+    "image": "images/konjugate.fintech.webp",
     "packages": [
         { "packageType": "plugin", "packageId": "konjugate.fintech.engine" },
         { "packageType": "addon", "packageId": "konjugate.fintech.toolbox" }

@@ -498,6 +498,27 @@ test('loadNamespaceRegistry rejects recommended:true without downloadUrl/package
     });
 });
 
+test('loadNamespaceRegistry accepts an image in the registry\'s images/ directory', async () => {
+    const entry = minimalEntry({ image: 'images/example.fintech.webp' });
+    await withRegistry({ 'example.fintech.json': entry }, async (directory) => {
+        const { prefixes } = await loadNamespaceRegistry(directory);
+        assert.equal(prefixes['example.fintech'].image, 'images/example.fintech.webp');
+    });
+});
+
+test('loadNamespaceRegistry rejects an image that is a URL, leaves images/ or is not a picture', async () => {
+    const rejected = [
+        'https://tracker.example.org/pixel.png', '/images/example.png', 'images/../example.png', 'images/nested/example.png',
+        'thumbnails/example.png', 'example.png', 'images/example.svg', 'images/.png', '', 42
+    ];
+    for (const image of rejected) {
+        await withRegistry({ 'example.fintech.json': minimalEntry({ image }) }, async (directory) => {
+            await assert.rejects(() => loadNamespaceRegistry(directory),
+                (error) => error instanceof PackageArchiveError && error.code === 'INVALID_REGISTRY_ENTRY' && /image, if present/.test(error.message), String(image));
+        });
+    }
+});
+
 test('a package signed under a prefix loaded from a real registry directory verifies end to end', async () => {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
     const entry = minimalEntry({ publicKeys: [pem(publicKey, 'spki')] });
