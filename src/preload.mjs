@@ -99,7 +99,13 @@ contextBridge.exposeInMainWorld('shapeLibrary', {
 // A launcher add-on's "open in canvas": the host sends a decoded project (model plus any result
 // branches) for this window to load, exactly like an example.
 contextBridge.exposeInMainWorld('launcherHost', {
-    onOpenProject: (callback) => ipcRenderer.on('launcherOpenProject', (_event, payload) => callback(payload))
+    onOpenProject: (callback) => ipcRenderer.on('launcherOpenProject', (_event, payload) => callback(payload)),
+    // The host asks for the data a launcher keeps with the open project; the window answers from its own copy.
+    onAddonDataRequest: (callback) => ipcRenderer.on('launcherAddonDataRequest', (_event, { requestId, addonId }) => {
+        let data = null;
+        try { data = callback(addonId) ?? null; } catch { data = null; }
+        ipcRenderer.send('launcherAddonDataReply', { requestId, data });
+    })
 });
 
 contextBridge.exposeInMainWorld('componentLibrary', {

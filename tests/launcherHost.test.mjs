@@ -7,6 +7,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { validateAddonManifest } from '../src/addonHost.mjs';
 import {
+    attachAddonData, buildSessionEntry, sessionInputs,
     checkRunLength,
     applyOverrides, buildRunManifest, composeBranchSamples, decodeText, extractSeries, fetchAllowed, safeFileName, resolveInterventions, resultsToCsv, runImporter, runScenarioBranches, sha256
 } from '../src/launcherHost.mjs';
@@ -294,4 +295,46 @@ test('a window may choose a run length up to a number of engine steps, in whatev
     // Too many steps for a window to ask for in one run, whatever the unit.
     assert.throws(() => checkRunLength(600000, 0, 1), /at most 500000 \(500,000 steps of 1\)/);
     assert.throws(() => checkRunLength(20 * 365 * 86400, 0, 900), /at most 450000000 \(500,000 steps of 900\)/);
+});
+
+test('a launcher keeps its session with the project: its window state and its inputs, beside any other launcher\'s', () => {
+    const inputs = [
+        { role: 'roads', name: 'roads-1.json', text: '{"elements":[]}', encoding: 'utf-8', sha256: 'a', bytes: 15, url: 'https://overpass-api.de/api/interpreter?data=x', retrievedAt: '2026-10-01T10:00:00.000Z', path: '/secret/path' },
+        { role: 'sites', name: 'sites.csv', text: 'name,kind\n', encoding: 'utf-8', sha256: 'b', bytes: 10, sample: true }
+    ];
+    const entry = buildSessionEntry({ addon: { version: '0.2.0' }, window: { kept: ['port:1'] }, inputs, savedAt: '2026-10-01T11:00:00.000Z' });
+    assert.deepEqual(entry.window, { kept: ['port:1'] });
+    assert.equal(entry.version, 1);
+    assert.equal(entry.addonVersion, '0.2.0');
+    assert.equal(entry.inputs[0].url, 'https://overpass-api.de/api/interpreter?data=x');
+    assert.equal(entry.inputs[0].path, undefined, 'a file path on this computer is never written into the project');
+    assert.equal(entry.inputs[1].sample, true);
+    const content = attachAddonData(JSON.stringify({ format: 'konjugate', nodes: [], addonData: { 'other.addon': { version: 1 } } }), 'konjugate.logistics.toolbox', entry);
+    const document = JSON.parse(content);
+    assert.deepEqual(Object.keys(document.addonData).sort(), ['konjugate.logistics.toolbox', 'other.addon']);
+    assert.throws(() => buildSessionEntry({ addon: { version: '1' }, window: { big: 'x'.repeat(3 * 1024 * 1024) }, inputs: [] }), /larger than the host keeps/);
+});
+
+test('a saved session gives back the inputs its launcher still declares, as pending files', () => {
+    const importers = [{ importerId: 'region', files: [{ role: 'roads', multiple: true }, { role: 'places' }] }];
+    const entry = { version: 1, inputs: [
+        { role: 'roads', name: 'roads-1.json', text: '{}', url: 'https://overpass-api.de/x', retrievedAt: 't' },
+        { role: 'roads', name: 'roads-2.json', text: '{}' },
+        { role: 'places', name: 'places-1.json', text: '{}' },
+        { role: 'gone', name: 'old.json', text: '{}' },
+        { role: 'places', name: 'broken.json' }
+    ] };
+    const restored = sessionInputs(entry, importers);
+    assert.deepEqual(restored.map((item) => item.key), ['roads::roads-1.json', 'roads::roads-2.json', 'places']);
+    assert.equal(restored[0].file.url, 'https://overpass-api.de/x');
+    assert.equal(restored[0].file.bytes, 2);
+    assert.equal(sessionInputs(null, importers), null);
+    assert.equal(sessionInputs({ version: 2, inputs: [] }, importers), null, 'an entry of a version this host does not know is left alone');
+});
+
+test('a launcher may ask for project.data and require projectSession', () => {
+    const manifest = launcher();
+    manifest.permissions = [...manifest.permissions, 'project.data'];
+    manifest.requires = ['projectSession'];
+    assert.doesNotThrow(() => validateAddonManifest(manifest));
 });

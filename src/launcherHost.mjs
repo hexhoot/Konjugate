@@ -25,6 +25,10 @@ const maximumSuppliedSamples = 5000;
 const maximumRunSteps = 500000;
 const maximumFetchedTextBytes = 1024 * 1024;
 const fetchTimeoutMilliseconds = 20000;
+// A launcher's session, kept with the project: its window's own state, and the input files it was built from.
+const maximumSessionWindowBytes = 2 * 1024 * 1024;
+const maximumSessionInputBytes = 64 * 1024 * 1024;
+const addonDataRequestMilliseconds = 5000;
 const maximumRedirects = 3;
 
 export const sha256 = (data) => createHash('sha256').update(data).digest('hex');
@@ -107,6 +111,43 @@ export function runImporter({ addonDirectory, importer, files, options = {}, tim
         });
         worker.once('error', (error) => { clearTimeout(timer); reject(new Error(`The importer failed: ${error.message}`)); });
     });
+}
+
+// ---- sessions kept with the project ------------------------------------------------------------------
+
+// What a launcher keeps with the project it opens in the canvas (docs/projectSchema.md, `addonData`): the window's
+// own state, as the window gave it, and the input files the model was built from, so the session can be restored
+// on any machine without fetching or choosing anything again. Throws a message a user can act on.
+export function buildSessionEntry({ addon, window, inputs, savedAt = new Date().toISOString() }) {
+    const windowText = JSON.stringify(window ?? null);
+    if (windowText.length > maximumSessionWindowBytes) throw new Error('The window\'s session is larger than the host keeps.');
+    const kept = inputs.map(({ role, name, text, encoding, url, retrievedAt, sha256: hash, bytes, sample }) => ({
+        role, name, text, encoding: encoding ?? 'utf-8', sha256: hash, bytes, ...(url ? { url, retrievedAt } : {}), ...(sample ? { sample: true } : {})
+    }));
+    if (kept.reduce((total, input) => total + (input.text?.length ?? 0), 0) > maximumSessionInputBytes) {
+        throw new Error(`The data this session was built from is larger than the ${maximumSessionInputBytes / 1024 / 1024} MB a project keeps.`);
+    }
+    return { version: 1, addonVersion: addon.version, savedAt, window: JSON.parse(windowText), inputs: kept };
+}
+
+// The project text with one launcher's entry in its addonData, leaving any other launcher's entry as it was.
+export function attachAddonData(contentText, addonId, entry) {
+    const document = JSON.parse(contentText);
+    document.addonData = { ...(document.addonData ?? {}), [addonId]: entry };
+    return JSON.stringify(document);
+}
+
+// The input files of a saved session that this launcher still declares, ready to be pending files again.
+export function sessionInputs(entry, importers) {
+    if (entry?.version !== 1 || !Array.isArray(entry.inputs)) return null;
+    const roles = new Set((importers ?? []).flatMap((importer) => importer.files.map((file) => file.role)));
+    const multiple = new Set((importers ?? []).flatMap((importer) => importer.files.filter((file) => file.multiple).map((file) => file.role)));
+    return entry.inputs
+        .filter((input) => roles.has(input.role) && typeof input.text === 'string' && typeof input.name === 'string')
+        .map((input) => ({ key: multiple.has(input.role) ? `${input.role}::${input.name}` : input.role, file: {
+            role: input.role, name: input.name, text: input.text, encoding: input.encoding ?? 'utf-8', sha256: input.sha256 ?? sha256(input.text),
+            bytes: input.bytes ?? Buffer.byteLength(input.text), sample: Boolean(input.sample), ...(input.url ? { url: input.url, retrievedAt: input.retrievedAt } : {}), restored: true
+        } }));
 }
 
 // ---- scenarios --------------------------------------------------------------------------------------
@@ -617,8 +658,8 @@ export function registerLauncherHandlers(deps) {
 
     // The project the canvas would hold after these runs: the model with a baseline branch and, when a
     // scenario has run, its forked branch, exactly as the canvas's own Fork here would have built it.
-    async function buildProject(workspace, scenarioKey) {
-        const { contentText } = workspace.imported;
+    async function buildProject(workspace, scenarioKey, addonData = null) {
+        const contentText = addonData ? attachAddonData(workspace.imported.contentText, addonData.addonId, addonData.entry) : workspace.imported.contentText;
         const branches = [];
         if (workspace.baseline) branches.push({ buffer: await readFile(workspace.baseline.resultPath), branchUuid: workspace.baseline.uuid, parentBranchUuid: null, forkTime: null, label: 'Baseline' });
         const run = scenarioKey ? workspace.scenarios.get(scenarioKey) : null;
@@ -633,17 +674,58 @@ export function registerLauncherHandlers(deps) {
         return matches.at(-1) ?? null;
     };
 
-    ipcMain.handle('launcherOpenInCanvas', guarded(async ({ addon, workspace, projectWindow }, { scenarioId = null, focus = true, silent = false }) => {
+    ipcMain.handle('launcherOpenInCanvas', guarded(async ({ addon, workspace, projectWindow }, { scenarioId = null, focus = true, silent = false, session }) => {
         needs(addon, 'model.open');
         if (!workspace.imported) throw new Error('Import your data first.');
-        const payload = await decodeProjectForRenderer(await buildProject(workspace, keyFor(workspace, scenarioId)));
+        // A launcher with project.data may keep its session with the project it opens: saved with it, restored from it.
+        let addonData = null;
+        if (session !== undefined) {
+            needs(addon, 'project.data');
+            addonData = { addonId: addon.manifest.addonId, entry: buildSessionEntry({ addon: addon.manifest, window: session, inputs: [...workspace.pending.values()] }) };
+        }
+        const payload = await decodeProjectForRenderer(await buildProject(workspace, keyFor(workspace, scenarioId), addonData));
         if (projectWindow.isDestroyed()) throw new Error('The project window has been closed.');
-        projectWindow.webContents.send('launcherOpenProject', { ...payload, silent, suggestedFilename: `${addon.manifest.name.replaceAll(/[^A-Za-z0-9]+/g, '')}.kjt` });
+        projectWindow.webContents.send('launcherOpenProject', { ...payload, silent, addonName: addon.manifest.name, suggestedFilename: `${addon.manifest.name.replaceAll(/[^A-Za-z0-9]+/g, '')}.kjt` });
         if (focus) {
             projectWindow.show();
             projectWindow.focus();
         }
         return {};
+    }));
+
+    // The project window holds the open project, so the host asks it for this launcher's entry.
+    let nextAddonDataRequest = 1;
+    function requestAddonData(projectWindow, addonId) {
+        return new Promise((resolvePromise) => {
+            const requestId = nextAddonDataRequest++;
+            const timer = setTimeout(() => { ipcMain.removeListener('launcherAddonDataReply', listener); resolvePromise(null); }, addonDataRequestMilliseconds);
+            function listener(event, reply) {
+                if (event.sender !== projectWindow.webContents || reply?.requestId !== requestId) return;
+                clearTimeout(timer);
+                ipcMain.removeListener('launcherAddonDataReply', listener);
+                resolvePromise(reply.data ?? null);
+            }
+            ipcMain.on('launcherAddonDataReply', listener);
+            projectWindow.webContents.send('launcherAddonDataRequest', { requestId, addonId });
+        });
+    }
+
+    // Restores the session this launcher kept with the open project: its input files become the pending files again
+    // (so its importer can run as before, offline), and the window gets back the state it saved.
+    ipcMain.handle('launcherRestoreSession', guarded(async ({ addon, workspace, projectWindow }) => {
+        needs(addon, 'project.data');
+        if (projectWindow.isDestroyed()) throw new Error('The project window has been closed.');
+        const entry = await requestAddonData(projectWindow, addon.manifest.addonId);
+        const inputs = sessionInputs(entry, addon.manifest.contributes?.importers);
+        if (!inputs) return { session: null };
+        workspace.pending.clear();
+        for (const { key, file } of inputs) workspace.pending.set(key, file);
+        workspace.imported = null;
+        await releaseRuns(workspace);
+        return {
+            session: entry.window ?? null, savedAt: entry.savedAt ?? null, addonVersion: entry.addonVersion ?? null,
+            inputs: inputs.map(({ file }) => ({ role: file.role, name: file.name, bytes: file.bytes, ...(file.url ? { url: file.url, retrievedAt: file.retrievedAt } : {}) }))
+        };
     }));
 
     ipcMain.handle('launcherExportResults', guarded(async ({ addon, workspace, state }, { scenarioId = null, summaryCsv = '' }) => {

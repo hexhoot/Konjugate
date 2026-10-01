@@ -397,6 +397,11 @@ const emptyProjectDocument = {
 };
 const model = hydrateProjectDocument(emptyProjectDocument);
 let currentProjectPath = null;
+// Data launcher add-ons keep with the project ({ addonId: entry }; see docs/projectSchema.md). It sits beside the
+// model rather than in it: it is read when a project is loaded and written when it is saved, and never reaches
+// the engine, validation, copy and paste, or the undo history.
+let projectAddonData = {};
+const addonDataOf = (document) => (document?.addonData && typeof document.addonData === 'object' && !Array.isArray(document.addonData) ? document.addonData : {});
 let currentProjectFilename = 'untitled.kjt';
 let currentProjectPassword = null;
 let activeExampleId = null;
@@ -6226,6 +6231,7 @@ async function loadProjectDocument(document, {
     discardAssistantProposal();
     hideAssistantPanel();
     const nextModel = hydrateProjectDocument(document);
+    projectAddonData = addonDataOf(document);
     clearRenderedModel();
     model.metadata = nextModel.metadata;
     model.runConfigurations = nextModel.runConfigurations;
@@ -8943,7 +8949,7 @@ async function saveProject(saveAs = false, password = currentProjectPassword) {
         const contentChoice = hasEmbeddableResult ? await requestSaveContentChoice() : 'model';
         if (!contentChoice) return false;
         const includeResults = contentChoice === 'modelAndResults';
-        const content = `${JSON.stringify(serializeProjectDocument(), null, 4)}\n`;
+        const content = `${JSON.stringify({ ...serializeProjectDocument(), ...(Object.keys(projectAddonData).length ? { addonData: projectAddonData } : {}) }, null, 4)}\n`;
         // Refresh the active branch's own record before reading it (mirrors activateBranch's own
         // park-on-switch refresh) -- it can otherwise be stale between live updates.
         const activeBranchRecord = branches.get(activeBranchUuid);
@@ -9018,12 +9024,15 @@ window.launcherHost?.onOpenProject(async (payload) => {
             embeddedResult: payload.embeddedResult,
             embeddedBranches: payload.embeddedBranches
         });
-        $('#statusText').textContent = payload.silent ? 'Live-synced from FinTech Toolbox' : 'Opened from the toolbox as an unsaved copy';
+        $('#statusText').textContent = payload.silent ? `Live-synced from ${payload.addonName ?? 'the toolbox'}` : 'Opened from the toolbox as an unsaved copy';
     } catch (error) {
         console.error(error);
         $('#statusText').textContent = `Could not open the project · ${error.message}`;
     }
 });
+
+// A launcher asks for the data it keeps with this project (its saved session), to restore its window.
+window.launcherHost?.onAddonDataRequest?.((addonId) => projectAddonData[addonId] ?? null);
 
 $('#exampleGuideButton').addEventListener('click', () => {
     if (activeExampleId) window.projectFiles.openExampleGuide(activeExampleId);
