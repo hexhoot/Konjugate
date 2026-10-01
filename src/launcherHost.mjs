@@ -152,6 +152,16 @@ export function sessionInputs(entry, importers) {
 
 // ---- scenarios --------------------------------------------------------------------------------------
 
+// A fork time the window asks for (with the scenarioForkTime feature): from the start of the run up to, but not
+// including, its end. The fork itself lands on the nearest kept checkpoint, one per output interval. Returns the
+// fork time; throws a message a user can act on.
+export function checkForkTime(forkAt, runTime) {
+    if (!(Number.isFinite(forkAt) && forkAt >= 0 && forkAt < runTime)) {
+        throw new Error(`The scenario must start at or after 0 and before the end of the run (${runTime}).`);
+    }
+    return forkAt;
+}
+
 // A run length the window asks for: after the scenario's fork, and at most maximumRunSteps of the model's own
 // global step. Returns the run length; throws a message a user can act on.
 export function checkRunLength(runTime, forkAt, globalTimeStep) {
@@ -622,14 +632,16 @@ export function registerLauncherHandlers(deps) {
         return entry.promise;
     }
 
-    ipcMain.handle('launcherRunScenario', guarded(async ({ addon, workspace, state }, { scenarioId, entity = null, signals = [], runTime = null, supplied = null, overrides = null, retain = true }) => {
+    ipcMain.handle('launcherRunScenario', guarded(async ({ addon, workspace, state }, { scenarioId, entity = null, signals = [], runTime = null, forkAt = null, supplied = null, overrides = null, retain = true }) => {
         needs(addon, 'scenario.run');
         const declaredScenario = declared(addon.manifest.contributes?.scenarios, 'scenarioId', scenarioId, 'scenario');
         if (!workspace.imported) throw new Error('Import your data first.');
-        // The window may choose how far ahead to run, and may supply the data a scenario declares it takes.
-        if (runTime !== null) checkRunLength(runTime, declaredScenario.forkAt, workspace.imported.document.runConfigurations?.[0]?.globalTimeStep);
+        // The window may choose when the scenario starts and how far ahead to run, and may supply the data a scenario
+        // declares it takes. Supplied paths are counted from the fork, wherever it is.
+        const chosenFork = forkAt === null ? declaredScenario.forkAt : checkForkTime(forkAt, runTime ?? declaredScenario.runTime);
+        if (runTime !== null) checkRunLength(runTime, chosenFork, workspace.imported.document.runConfigurations?.[0]?.globalTimeStep);
         if (supplied !== null && JSON.stringify(supplied).length > maximumOptionsBytes) throw new Error('The supplied data is larger than the host accepts.');
-        const scenario = { ...declaredScenario, ...(runTime === null ? {} : { runTime }) };
+        const scenario = { ...declaredScenario, forkAt: chosenFork, ...(runTime === null ? {} : { runTime }) };
         if (scenario.choose && !workspace.imported.entities.includes(entity)) throw new Error(`Choose ${scenario.choose.label.toLowerCase()} first.`);
         const notify = (progress) => { if (state.launcherWindow && !state.launcherWindow.isDestroyed()) state.launcherWindow.webContents.send('launcherProgress', progress); };
         if (overrides !== null && JSON.stringify(overrides).length > maximumOptionsBytes) throw new Error('The changes are larger than the host accepts.');

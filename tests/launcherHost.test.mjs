@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { validateAddonManifest } from '../src/addonHost.mjs';
 import {
     attachAddonData, buildSessionEntry, sessionInputs,
+    checkForkTime,
     checkRunLength,
     applyOverrides, buildRunManifest, composeBranchSamples, decodeText, extractSeries, fetchAllowed, safeFileName, resolveInterventions, resultsToCsv, runImporter, runScenarioBranches, sha256
 } from '../src/launcherHost.mjs';
@@ -336,6 +337,15 @@ test('a launcher may ask for project.data and require projectSession', () => {
     const manifest = launcher();
     manifest.permissions = [...manifest.permissions, 'project.data'];
     manifest.requires = ['projectSession'];
+    assert.doesNotThrow(() => validateAddonManifest(manifest));
+});
+
+test('the window may choose when a scenario starts, from the run\'s start up to its end', () => {
+    assert.equal(checkForkTime(0, 90 * 86400), 0);
+    assert.equal(checkForkTime(10 * 86400, 90 * 86400), 10 * 86400);
+    for (const forkAt of [-1, 90 * 86400, Number.NaN, Infinity]) assert.throws(() => checkForkTime(forkAt, 90 * 86400), /The scenario must start at or after 0 and before the end of the run/);
+    const manifest = launcher();
+    manifest.requires = ['scenarioForkTime'];
     assert.doesNotThrow(() => validateAddonManifest(manifest));
 });
 
