@@ -118,8 +118,14 @@ export async function checkSubstepConvergenceWithEngine(content, runConfiguratio
     const directory = await mkdtemp(join(tmpdir(), 'konjugateConvergence-'));
     try {
         const resolvedContent = await resolveInstalledFmus(await resolveInstalledPlugins(content, options), options);
+        const resolvedDocument = JSON.parse(resolvedContent);
         const findings = await checkSubstepConvergence({
-            executable, document: JSON.parse(resolvedContent), runConfiguration, nodeIds, directory
+            executable, document: resolvedDocument,
+            // Without this, the configured Provider Toolchains interpreter/compiler (and the
+            // Python SDK's own PYTHONPATH injection) never reached the engine here -- see
+            // buildProvidersConfiguration's own comment for the real handshake failure this caused.
+            runConfiguration: { ...runConfiguration, providers: buildProvidersConfiguration(runConfiguration, options, resolvedDocument) },
+            nodeIds, directory
         });
         return { available: true, findings };
     } finally {
@@ -221,6 +227,52 @@ function pythonProviderSdkPath({ applicationPath, resourcesPath, packaged }) {
     return join(packaged ? resourcesPath : applicationPath, 'engine', 'sdk', 'python');
 }
 
+// Shared by startEngineRun and checkSubstepConvergenceWithEngine below -- both write a
+// runConfiguration.json the engine reads providers.{cpp,python}.{sdkPath,compiler,interpreter}
+// and providers.executionMode from (engine/src/simulationRunner.cpp), and both need the exact same
+// precedence to actually honor a configured Provider Toolchains path rather than silently falling
+// back to a bare "python3"/"cc" the OS resolves on its own (on macOS, Apple's CommandLineTools
+// stub python3, which has no third-party packages installed; on Windows, the Microsoft Store App
+// Execution Alias stub) -- confirmed as the exact cause of a real "No module named konjugate" /
+// "Python was not found" handshake failure when checkSubstepConvergenceWithEngine used to build
+// its own runConfiguration without this block at all.
+export function buildProvidersConfiguration(configuration, options, resolvedDocument) {
+    // A cpp computational-node provider (an FMI import is always one; a hand-authored one could
+    // be too) only ever runs in-process -- engine/src/providerRuntime.cpp deliberately gives it
+    // no worker-process fallback, since providerWorker.cpp has no node-provider protocol for C++
+    // at all. Falling back to the ordinary sharedMemoryWorker default for such a document would
+    // fail the run outright, so its presence overrides the default tier (but never an executionMode
+    // the caller/env/toolchain preference actually asked for -- see the precedence comment below).
+    const requiresInProcessNodeProvider = resolvedDocument.nodes?.some((node) => node.implementation?.kind === 'cpp') ?? false;
+    return {
+        ...configuration.providers,
+        // See ProviderExecutionMode in the engine. Precedence: an explicit per-run override
+        // (not currently set by anything in this app, but available to callers/tests) wins
+        // over a developer's session-scoped env var override, which wins over the user's
+        // own choice in the Provider Toolchains dialog's advanced section (empty string
+        // there means "Automatic" — deliberately falsy, so it falls through here), which
+        // falls back to sharedMemoryWorker as the default -- unless the resolved document
+        // requires the in-process transport outright (see above), in which case that default
+        // becomes inProcess instead. ProviderRuntime already falls back to the pipe transport
+        // per-process on any higher-tier setup failure, so defaulting sharedMemoryWorker on
+        // is safe even for users who never touch this.
+        executionMode: configuration.providers?.executionMode
+            || process.env.KONJUGATE_PROVIDER_EXECUTION_MODE
+            || options.providerToolchains?.executionMode
+            || (requiresInProcessNodeProvider ? 'inProcess' : 'sharedMemoryWorker'),
+        cpp: {
+            sdkPath: cppProviderSdkPath(options),
+            ...(options.providerToolchains?.cpp?.compilerPath ? { compiler: options.providerToolchains.cpp.compilerPath } : {}),
+            ...configuration.providers?.cpp
+        },
+        python: {
+            sdkPath: pythonProviderSdkPath(options),
+            ...(options.providerToolchains?.python?.interpreterPath ? { interpreter: options.providerToolchains.python.interpreterPath } : {}),
+            ...configuration.providers?.python
+        }
+    };
+}
+
 export async function startEngineRun(content, configuration, options, { onUpdate, retainResult = false } = {}) {
     const executable = await resolveEnginePath(options);
     if (!executable) return { available: false };
@@ -233,13 +285,6 @@ export async function startEngineRun(content, configuration, options, { onUpdate
     const resolvedContent = await resolveInstalledFmus(await resolveInstalledPlugins(content, options), options);
     await writeFile(inputPath, await encodeProjectFile(resolvedContent));
     const resolvedDocument = JSON.parse(resolvedContent);
-    // A cpp computational-node provider (an FMI import is always one; a hand-authored one could
-    // be too) only ever runs in-process -- engine/src/providerRuntime.cpp deliberately gives it
-    // no worker-process fallback, since providerWorker.cpp has no node-provider protocol for C++
-    // at all. Falling back to the ordinary sharedMemoryWorker default for such a document would
-    // fail the run outright, so its presence overrides the default tier (but never an executionMode
-    // the caller/env/toolchain preference actually asked for -- see the precedence comment below).
-    const requiresInProcessNodeProvider = resolvedDocument.nodes?.some((node) => node.implementation?.kind === 'cpp') ?? false;
     await writeFile(configurationPath, JSON.stringify({
         ...configuration,
         pacing: initialPacing,
@@ -251,33 +296,7 @@ export async function startEngineRun(content, configuration, options, { onUpdate
         // CLI used directly (tests, scripted/batch use) -- those still default to unmonitored,
         // exactly as engine/src/simulationRunner.cpp itself already does.
         stabilityMonitoring: configuration.stabilityMonitoring ?? { nodeIds: (resolvedDocument.nodes ?? []).map((node) => node.id) },
-        providers: {
-            ...configuration.providers,
-            // See ProviderExecutionMode in the engine. Precedence: an explicit per-run override
-            // (not currently set by anything in this app, but available to callers/tests) wins
-            // over a developer's session-scoped env var override, which wins over the user's
-            // own choice in the Provider Toolchains dialog's advanced section (empty string
-            // there means "Automatic" — deliberately falsy, so it falls through here), which
-            // falls back to sharedMemoryWorker as the default -- unless the resolved document
-            // requires the in-process transport outright (see above), in which case that default
-            // becomes inProcess instead. ProviderRuntime already falls back to the pipe transport
-            // per-process on any higher-tier setup failure, so defaulting sharedMemoryWorker on
-            // is safe even for users who never touch this.
-            executionMode: configuration.providers?.executionMode
-                || process.env.KONJUGATE_PROVIDER_EXECUTION_MODE
-                || options.providerToolchains?.executionMode
-                || (requiresInProcessNodeProvider ? 'inProcess' : 'sharedMemoryWorker'),
-            cpp: {
-                sdkPath: cppProviderSdkPath(options),
-                ...(options.providerToolchains?.cpp?.compilerPath ? { compiler: options.providerToolchains.cpp.compilerPath } : {}),
-                ...configuration.providers?.cpp
-            },
-            python: {
-                sdkPath: pythonProviderSdkPath(options),
-                ...(options.providerToolchains?.python?.interpreterPath ? { interpreter: options.providerToolchains.python.interpreterPath } : {}),
-                ...configuration.providers?.python
-            }
-        }
+        providers: buildProvidersConfiguration(configuration, options, resolvedDocument)
     }));
     const parsedDocument = JSON.parse(content);
     const liveParameterIds = liveControlParameterIds(parsedDocument);
