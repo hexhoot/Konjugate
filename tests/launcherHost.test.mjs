@@ -121,6 +121,16 @@ test('supplied data can be given per parameter, each for its own entities along 
     assert.doesNotThrow(() => validateAddonManifest(manifest));
 });
 
+test('supplied values outside a parameter\'s range are held to it, and the change says how many', () => {
+    const index = [{ key: 'arrivals', scope: 'instance', entity: 'Port', sharedParameterId: 1, name: 'Arrivals (Port)', live: true, minimum: 0, maximum: 100, value: 25 }];
+    const scenario = { name: 'Diversion', interventions: [{ parameter: 'arrivals', target: 'supplied', samples: true }] };
+    const [change] = resolveInterventions(scenario, index, null, { entities: ['Port'], samples: { Port: [[0, 25], [10, 400], [20, 400], [30, -5]] } });
+    assert.deepEqual(change.samples.map((sample) => sample.value), [25, 100, 100, 0]);
+    assert.deepEqual(change.clamped, { count: 3, of: 4, minimum: 0, maximum: 100 });
+    const [inside] = resolveInterventions(scenario, index, null, { entities: ['Port'], samples: { Port: [[0, 25], [10, 90]] } });
+    assert.equal(inside.clamped, undefined, 'nothing to report when every value fits');
+});
+
 test('a supplied intervention takes a value or samples, and not both or neither', () => {
     const withIntervention = (intervention) => { const manifest = launcher(); manifest.contributes.scenarios[0].interventions = [intervention]; return manifest; };
     assert.equal(validateAddonManifest(withIntervention({ parameter: 'drive', target: 'supplied', samples: true })).kind, 'launcher');

@@ -191,6 +191,12 @@ export function resolveInterventions(scenario, parameterIndex, chosenEntity, sup
                 if (!entry) throw new Error(`The scenario "${scenario.name}" changes "${intervention.parameter}", which this model does not have for ${entity}.`);
                 if (!entry.live) throw new Error(`"${entry.name}" cannot be changed during a run.`);
                 const clamp = (value) => Math.min(Math.max(value, entry.minimum ?? -Infinity), entry.maximum ?? Infinity);
+                // A value outside the parameter's range is held to it, and the change says so, so the window can tell its
+                // user rather than run something other than what it supplied without a word.
+                const clamped = (values) => {
+                    const count = values.filter((value) => value !== clamp(value)).length;
+                    return count ? { clamped: { count, of: values.length, minimum: entry.minimum ?? null, maximum: entry.maximum ?? null } } : {};
+                };
                 if (intervention.samples) {
                     const samples = source.samples?.[entity];
                     if (!Array.isArray(samples) || samples.length < 2 || samples.length > maximumSuppliedSamples || !samples.every((pair) => Array.isArray(pair) && Number.isFinite(pair[0]) && Number.isFinite(pair[1]))) {
@@ -198,10 +204,11 @@ export function resolveInterventions(scenario, parameterIndex, chosenEntity, sup
                     }
                     resolved.push({
                         sharedParameterId: entry.sharedParameterId, name: entry.name, parameter: intervention.parameter, entity,
-                        samples: samples.map(([time, value]) => ({ time, value: clamp(value) })), at: 0, duration: 0, baseValue: entry.value ?? 0
+                        samples: samples.map(([time, value]) => ({ time, value: clamp(value) })), at: 0, duration: 0, baseValue: entry.value ?? 0,
+                        ...clamped(samples.map(([, value]) => value))
                     });
                 } else {
-                    resolved.push({ sharedParameterId: entry.sharedParameterId, name: entry.name, parameter: intervention.parameter, entity, value: clamp(intervention.value), at: intervention.at ?? 0, duration: intervention.duration ?? 0, baseValue: entry.value ?? 0 });
+                    resolved.push({ sharedParameterId: entry.sharedParameterId, name: entry.name, parameter: intervention.parameter, entity, value: clamp(intervention.value), at: intervention.at ?? 0, duration: intervention.duration ?? 0, baseValue: entry.value ?? 0, ...clamped([intervention.value]) });
                 }
             }
             continue;
