@@ -23,7 +23,9 @@ const allowedPermissions = new Set([
 // parameterSchedules: the engine follows a shared parameter's stored schedule (docs/projectSchema.md),
 // so a launcher whose importer writes schedules can refuse a version that would run them as constants.
 // scenarioForkTime: runScenario accepts the window's own fork time (forkAt).
-export const launcherFeatures = new Set(['scenarioOverrides', 'runRecord', 'projectSession', 'parameterSchedules', 'scenarioForkTime']);
+// suppliedPerParameter: supplied data may be given per parameter (supplied.byParameter), so one scenario can change
+// several parameters, each for its own entities along its own paths.
+export const launcherFeatures = new Set(['scenarioOverrides', 'runRecord', 'projectSession', 'parameterSchedules', 'scenarioForkTime', 'suppliedPerParameter']);
 const launcherPermissions = new Set(['data.import', 'scenario.run', 'model.open', 'results.export', 'pages.open', 'analysis.infer', 'network.fetch', 'project.data']);
 const contributionIdPattern = /^[a-z][A-Za-z0-9]*$/;
 

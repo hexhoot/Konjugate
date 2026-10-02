@@ -181,15 +181,18 @@ export function resolveInterventions(scenario, parameterIndex, chosenEntity, sup
     for (const intervention of scenario.interventions) {
         const entries = parameterIndex.filter((entry) => entry.key === intervention.parameter);
         if (intervention.target === 'supplied') {
-            const entities = supplied?.entities ?? [];
-            if (!entities.length) throw new Error(`The scenario "${scenario.name}" needs the window to supply data.`);
+            // The window's data for this parameter: its own entry under byParameter (with the suppliedPerParameter feature),
+            // or else the data shared by every supplied intervention.
+            const source = supplied?.byParameter?.[intervention.parameter] ?? supplied;
+            const entities = source?.entities ?? [];
+            if (!entities.length) throw new Error(`The scenario "${scenario.name}" needs the window to supply data${supplied?.byParameter ? ` for "${intervention.parameter}"` : ''}.`);
             for (const entity of entities) {
                 const entry = entries.find((candidate) => candidate.entity === entity);
                 if (!entry) throw new Error(`The scenario "${scenario.name}" changes "${intervention.parameter}", which this model does not have for ${entity}.`);
                 if (!entry.live) throw new Error(`"${entry.name}" cannot be changed during a run.`);
                 const clamp = (value) => Math.min(Math.max(value, entry.minimum ?? -Infinity), entry.maximum ?? Infinity);
                 if (intervention.samples) {
-                    const samples = supplied.samples?.[entity];
+                    const samples = source.samples?.[entity];
                     if (!Array.isArray(samples) || samples.length < 2 || samples.length > maximumSuppliedSamples || !samples.every((pair) => Array.isArray(pair) && Number.isFinite(pair[0]) && Number.isFinite(pair[1]))) {
                         throw new Error(`The data supplied for ${entity} must be at least two, and at most ${maximumSuppliedSamples}, pairs of time and value.`);
                     }

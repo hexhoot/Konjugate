@@ -101,6 +101,26 @@ test('a scenario can take values or paths of values that the window supplies', (
     assert.throws(() => resolveInterventions(scenario, index, null, { entities: ['Gold'], samples: { Gold: [[0, 'x'], [1, 2]] } }), /at least two/);
 });
 
+test('supplied data can be given per parameter, each for its own entities along its own paths', () => {
+    const index = [
+        { key: 'open', scope: 'instance', entity: 'Lane A', sharedParameterId: 1, name: 'Open (Lane A)', live: true, minimum: 0, maximum: 1, value: 1 },
+        { key: 'share', scope: 'instance', entity: 'Lane A', sharedParameterId: 2, name: 'Share (Lane A)', live: true, minimum: 0, maximum: 1, value: 0.5 },
+        { key: 'share', scope: 'instance', entity: 'Lane B', sharedParameterId: 3, name: 'Share (Lane B)', live: true, minimum: 0, maximum: 1, value: 0.5 }
+    ];
+    const scenario = { name: 'Closure', interventions: [{ parameter: 'open', target: 'supplied', samples: true }, { parameter: 'share', target: 'supplied', samples: true }] };
+    const resolved = resolveInterventions(scenario, index, null, { byParameter: {
+        open: { entities: ['Lane A'], samples: { 'Lane A': [[0, 0], [10, 1]] } },
+        share: { entities: ['Lane A', 'Lane B'], samples: { 'Lane A': [[0, 0], [10, 0.5]], 'Lane B': [[0, 1], [10, 0.5]] } }
+    } });
+    assert.deepEqual(resolved.map((change) => [change.parameter, change.entity, change.samples.map((sample) => sample.value)]), [
+        ['open', 'Lane A', [0, 1]], ['share', 'Lane A', [0, 0.5]], ['share', 'Lane B', [1, 0.5]]
+    ]);
+    assert.throws(() => resolveInterventions(scenario, index, null, { byParameter: { open: { entities: ['Lane A'], samples: { 'Lane A': [[0, 0], [1, 1]] } } } }), /needs the window to supply data for "share"/);
+    const manifest = launcher();
+    manifest.requires = ['suppliedPerParameter'];
+    assert.doesNotThrow(() => validateAddonManifest(manifest));
+});
+
 test('a supplied intervention takes a value or samples, and not both or neither', () => {
     const withIntervention = (intervention) => { const manifest = launcher(); manifest.contributes.scenarios[0].interventions = [intervention]; return manifest; };
     assert.equal(validateAddonManifest(withIntervention({ parameter: 'drive', target: 'supplied', samples: true })).kind, 'launcher');
