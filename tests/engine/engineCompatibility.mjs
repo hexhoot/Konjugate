@@ -138,18 +138,39 @@ const invalidControl = await runWithCommandInput(executable, [
 ]);
 assert.equal(invalidControl.code, 5);
 assert.match(invalidControl.diagnostics, /out-of-order command/);
+// A live event batch only forms when writeResult()'s 250ms-real-time publish throttle
+// (engine/src/simulationRunner.cpp) catches more than one newly-ready sample at once --
+// deliberately a wall-clock race against however fast the run actually computes, not something
+// this test can pin down exactly. 10 samples total (the previous outputInterval) left almost no
+// margin: partitionCount:2 means every single step pays cross-process/thread synchronization
+// overhead, which is well-documented as slower and less consistent on Windows CI runners than on
+// POSIX ones specifically, and that was enough on its own to push a real run over the 250ms
+// boundary between nearly every sample, fragmenting every live batch down to exactly one sample
+// and failing this assertion (seen in a real Windows release build, not hypothetically). A
+// dedicated, much denser configuration -- 1000 samples over the same targetTime, every step also
+// an output boundary -- gives an enormous margin instead: multiple samples completing inside any
+// 250ms window stays true unless a single partitioned step costs upwards of ~100ms, which would be
+// a severely broken CI environment, not ordinary platform variance. The original runConfiguration
+// below is untouched and still drives every other assertion in this file (sample count, indexed
+// range queries, etc.), which do depend on its exact shape.
+const liveBatchingConfiguration = join(directory, 'liveBatchingConfiguration.json');
+await writeFile(liveBatchingConfiguration, JSON.stringify({
+    name: 'Live batching', targetTime: 1, globalTimeStep: 0.001, outputInterval: 0.001,
+    execution: { partitionCount: 2 }
+}));
+const batchedEvents = await readProtocolEvents(executable, [
+    'run', exampleInput, '--configuration', liveBatchingConfiguration,
+    '--output', join(directory, 'liveBatchingResult.bin'), '--event-stream', 'protobuf'
+]);
+assert.ok(batchedEvents.some((event) => event.sampleBatch?.times.length > 1),
+    'The engine must aggregate multiple available samples into one live Protobuf batch.');
+
 const runConfiguration = join(directory, 'runConfiguration.json');
 const simulationOutput = join(directory, 'simulationResult.bin');
 await writeFile(runConfiguration, JSON.stringify({
     name: 'Compatibility', targetTime: 1, globalTimeStep: 0.01, outputInterval: 0.1,
     execution: { partitionCount: 2 }
 }));
-const batchedEvents = await readProtocolEvents(executable, [
-    'run', exampleInput, '--configuration', runConfiguration,
-    '--output', join(directory, 'batchedSimulationResult.bin'), '--event-stream', 'protobuf'
-]);
-assert.ok(batchedEvents.some((event) => event.sampleBatch?.times.length > 1),
-    'The engine must aggregate multiple available samples into one live Protobuf batch.');
 assert.equal(await run(executable, ['run', exampleInput, '--configuration', runConfiguration, '--output', simulationOutput]), 0);
 const simulationBytes = await readFile(simulationOutput);
 assert.equal(simulationBytes.subarray(0, 4).toString('hex'), '4b4a5202');
