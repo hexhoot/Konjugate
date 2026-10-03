@@ -369,11 +369,14 @@ let welcomeVideoCardsCache = null;
 async function welcomeVideoCards() {
     if (!welcomeVideoCardsCache) {
         const manifest = JSON.parse(await readFile(join(welcomeAssetsDir, 'videos.json'), 'utf8'));
+        // Loaded live from YouTube's own public thumbnail CDN (img-src allows it in
+        // exampleGuide/index.html's CSP) rather than a screenshot bundled and committed per video --
+        // one less asset to keep in sync by hand every time a new episode is added.
         welcomeVideoCardsCache = manifest.videos.map((video) => ({
             section: 'video',
             title: video.title,
             url: `https://www.youtube.com/watch?v=${video.videoId}`,
-            thumbnailUrl: pathToFileURL(join(welcomeAssetsDir, `${video.id}.jpg`)).href
+            thumbnailUrl: `https://img.youtube.com/vi/${video.videoId}/hqdefault.jpg`
         }));
     }
     return welcomeVideoCardsCache;

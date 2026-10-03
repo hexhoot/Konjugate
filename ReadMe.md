@@ -21,7 +21,10 @@ Rather than requiring users to manually assemble large system-level formulations
 </table>
 </div>
 
-![Konjugate Application Screenshot](assets/ForReadme/konjugateAppScreenshot.png)
+<div align="center">
+<a href="https://www.youtube.com/watch?v=jiL0kP0VQvQ"><img src="assets/ForReadme/youtubeVideoThumbnail.png" alt="Watch the Konjugate introduction video" width="600"></a>
+<p>New here? Watch the introduction above, or follow the full <a href="https://www.youtube.com/watch?v=eDHksSqKhFs&list=PLRaxEsOU31bE">On-Ramp series</a> on YouTube, starting from Episode 1.</p>
+</div>
 
 ## Why build another simulation software?
 
@@ -86,14 +89,6 @@ Together, these smaller contributions determine how the state of every component
 
 By composing nodes and relationships, complex systems can be assembled from reusable models.
 
-### A more comprehensive interaction graph
-
-Real systems are often better represented as directed multigraphs than as networks with only one relationship between each pair of nodes. Two components may exchange several quantities through distinct physical mechanisms. For example, conduction, convection and radiation can act simultaneously between a battery and its surroundings, while retaining their own equations, parameters and directionality.
-
-Relationships may be unidirectional, such as an electrical input, diode current or command signal, or reciprocal, such as a thermal or mechanical coupling that contributes to the evolution of both connected components. Reciprocal mechanisms are expressed as complementary state-update contributions and can be grouped together in the interface without losing their individual definitions.
-
-![Advanced multigraph with parallel thermal relationships and unidirectional electrical interactions](assets/ForReadme/advancedGraphRepresentation.png)
-
 ## Causal inference
 
 Building a model by hand assumes you already know its structure, which components exist and how they interact. Often you don't; you have a CSV of timeseries data (sensor logs, monitoring exports, historical records) and want to know what's actually driving what before you can start authoring a model.
@@ -102,9 +97,34 @@ Konjugate can propose a starting graph from that data directly. Import a CSV of 
 
 It works in two stages: a lagged partial-correlation pass cheaply screens which variables are worth testing at all, then a joint ridge regression determines each surviving relationship's direction and fits its equation, linear or polynomial. See [Causal inference](docs/causalInference.md) for the full method.
 
+## Add-ons & Plugins
+
+Konjugate ships with a built-in Explorer for discovering and one-click-installing add-ons and plugins, with no central marketplace to run or depend on — see [the Addon Explorer](docs/addonExplorer.md) for how it works. A few real examples are already published:
+
+<table>
+<tr>
+<td width="280"><a href="https://github.com/zenineasa/Konjugate-Fintech"><img src="registry/images/konjugate.fintech.webp" alt="Konjugate Fintech Toolbox"></a></td>
+<td><strong><a href="https://github.com/zenineasa/Konjugate-Fintech">Konjugate Fintech Toolbox</a></strong><br>Quantitative finance, DeFi, and systemic-risk modeling for Konjugate: interbank contagion stress-testing and market-dynamics causal transmission.</td>
+</tr>
+<tr>
+<td width="280"><a href="https://github.com/zenineasa/Konjugate-PoseVisualizer"><img src="registry/images/konjugate.poseVisualizer.webp" alt="Pose Visualizer"></a></td>
+<td><strong><a href="https://github.com/zenineasa/Konjugate-PoseVisualizer">Pose Visualizer</a></strong><br>A Three.js 6-DOF pose visualizer for Konjugate results, with timeline-synced playback.</td>
+</tr>
+<tr>
+<td width="280"><a href="https://github.com/zenineasa/Konjugate-ResultPlotViewer"><img src="registry/images/konjugate.resultPlotViewer.webp" alt="Results Analysis"></a></td>
+<td><strong><a href="https://github.com/zenineasa/Konjugate-ResultPlotViewer">Results Analysis</a></strong><br>Plotly-backed time-series, scatter and distribution plots for exploring and comparing Konjugate simulation results, with CSV export.</td>
+</tr>
+<tr>
+<td width="280"><a href="https://github.com/zenineasa/Konjugate-HelloWorld"><img src="registry/images/konjugate.helloWorld.webp" alt="Hello World"></a></td>
+<td><strong><a href="https://github.com/zenineasa/Konjugate-HelloWorld">Hello World</a></strong><br>A minimal Konjugate add-on — the simplest possible example of the add-on API, meant as a starting point for anyone learning to author one.</td>
+</tr>
+</table>
+
+Install any of these from Konjugate's own Extensions dialog (Discover tab), or see [Add-on development](docs/addonDevelopment.md) to build your own.
+
 ## Current Status
 
-This project is currently in the early stages of development.
+Konjugate is in active development and public beta, not early-stage anymore — a real cross-platform release pipeline (macOS, Windows, Linux, plus an in-browser preview), causal inference from timeseries data, numerical stability diagnostics, FMU import/export, and an add-on/plugin ecosystem with one-click discovery and installation are already built and in use. The engine, schema and UI are still evolving, and the project isn't code-signed yet (see "Installing a Release Build" below), so treat it as beta-quality rather than a finished 1.0.
 
 ## Try It in Your Browser
 
@@ -217,15 +237,15 @@ The initial focus is on developing a desktop application where users can define 
 
 The desktop application uses a separate native C++ process to validate and execute the same `.kjt` models. The validator and simulation runner are also available through command-line interfaces, keeping model behavior consistent across desktop and automated workflows.
 
-Future directions include an extensible plugin ecosystem where users and developers can contribute physics models, reusable components, visualization tools and other simulation capabilities through the community.
+An extensible add-on/plugin ecosystem already lets users and developers contribute physics models, reusable components, visualization tools and other simulation capabilities through the community — see [Add-ons & Plugins](#add-ons--plugins) above — and continuing to grow that ecosystem, not building the mechanism itself, is the ongoing direction here.
 
 The roadmap includes:
 
-- graph-based system modelling,
-- interactive simulation environment,
-- high-performance simulation execution,
-- extensible physics models,
-- AI-assisted modelling workflows.
+- graph-based system modelling — built,
+- interactive simulation environment — built,
+- high-performance simulation execution — built, including partitioned, multi-threaded execution for larger models,
+- extensible physics models — built, via the add-on/plugin ecosystem,
+- AI-assisted modelling workflows — in progress, via the Model Assistant and causal-inference-driven model proposals.
 
 ## Contributing
 

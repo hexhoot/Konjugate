@@ -1,6 +1,29 @@
 {
     "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
     "videos": [
-        { "id": "onRampEpisode6", "videoId": "_hOn7jaTcWQ", "title": "Konjugate On-Ramp - Episode 6: The Model Assistant" }
+        {
+            "videoId": "eDHksSqKhFs",
+            "title": "Konjugate On-Ramp - Episode 1: Getting started"
+        },
+        {
+            "videoId": "2pTQCdeamjQ",
+            "title": "Konjugate On-Ramp - Episode 2: Selecting and Organizing"
+        },
+        {
+            "videoId": "BZkJ4lGLNxY",
+            "title": "Konjugate On-Ramp - Episode 3: Online Runs and Live Parameters"
+        },
+        {
+            "videoId": "bCKkraHtHKM",
+            "title": "Konjugate On-Ramp - Episode 4: Parameter Tuning"
+        },
+        {
+            "videoId": "AThoNWTapGQ",
+            "title": "Konjugate On-Ramp - Episode 5: Recovering Structure from Data"
+        },
+        {
+            "videoId": "_hOn7jaTcWQ",
+            "title": "Konjugate On-Ramp - Episode 6: The Model Assistant"
+        }
     ]
 }
