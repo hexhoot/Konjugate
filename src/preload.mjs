@@ -102,6 +102,9 @@ contextBridge.exposeInMainWorld('shapeLibrary', {
 // branches) for this window to load, exactly like an example.
 contextBridge.exposeInMainWorld('launcherHost', {
     onOpenProject: (callback) => ipcRenderer.on('launcherOpenProject', (_event, payload) => callback(payload)),
+    // A project is being built for this window (onOpenProject follows), or its build failed.
+    onOpenProjectPending: (callback) => ipcRenderer.on('launcherOpenProjectPending', () => callback()),
+    onOpenProjectAbandoned: (callback) => ipcRenderer.on('launcherOpenProjectAbandoned', () => callback()),
     // The host asks for the data a launcher keeps with the open project; the window answers from its own copy.
     onAddonDataRequest: (callback) => ipcRenderer.on('launcherAddonDataRequest', (_event, { requestId, addonId }) => {
         let data = null;

@@ -8971,6 +8971,7 @@ function requestSaveContentChoice() {
 
 async function saveProject(saveAs = false, password = currentProjectPassword) {
     try {
+        await waitForLauncherProjects();
         const hasEmbeddableResult = Boolean(activeResult && activeEngineJobId && !simulationRunning);
         const contentChoice = hasEmbeddableResult ? await requestSaveContentChoice() : 'model';
         if (!contentChoice) return false;
@@ -9038,6 +9039,32 @@ async function loadExample(id) {
     }
 }
 
+// Projects on their way from a launcher add-on: the host says so before it builds one, and each settles when it has
+// loaded here (or its build failed). A save waits for them, so it never writes the project as it was a moment before
+// the toolbox's latest change.
+let launcherProjectsPending = 0;
+let launcherProjectsSettled = null;
+let settleLauncherProjects = null;
+function launcherProjectExpected() {
+    launcherProjectsPending += 1;
+    if (!launcherProjectsSettled) launcherProjectsSettled = new Promise((resolve) => { settleLauncherProjects = resolve; });
+}
+function launcherProjectSettled() {
+    launcherProjectsPending = Math.max(0, launcherProjectsPending - 1);
+    if (launcherProjectsPending || !settleLauncherProjects) return;
+    settleLauncherProjects();
+    launcherProjectsSettled = null;
+    settleLauncherProjects = null;
+}
+async function waitForLauncherProjects() {
+    if (!launcherProjectsSettled) return;
+    $('#statusText').textContent = 'Waiting for the toolbox’s latest changes before saving…';
+    // A host that never answers must not block saving for good.
+    await Promise.race([launcherProjectsSettled, new Promise((resolve) => setTimeout(resolve, 60000))]);
+}
+window.launcherHost?.onOpenProjectPending?.(launcherProjectExpected);
+window.launcherHost?.onOpenProjectAbandoned?.(launcherProjectSettled);
+
 // A launcher add-on's "open in canvas": load the project it built (with its result branches) as an
 // unsaved copy, behind the usual unsaved-work confirmation. Not present in the web edition.
 window.launcherHost?.onOpenProject(async (payload) => {
@@ -9054,6 +9081,8 @@ window.launcherHost?.onOpenProject(async (payload) => {
     } catch (error) {
         console.error(error);
         $('#statusText').textContent = `Could not open the project · ${error.message}`;
+    } finally {
+        launcherProjectSettled();
     }
 });
 

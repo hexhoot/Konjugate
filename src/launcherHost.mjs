@@ -705,7 +705,16 @@ export function registerLauncherHandlers(deps) {
             needs(addon, 'project.data');
             addonData = { addonId: addon.manifest.addonId, entry: buildSessionEntry({ addon: addon.manifest, window: session, inputs: [...workspace.pending.values()] }) };
         }
-        const payload = await decodeProjectForRenderer(await buildProject(workspace, keyFor(workspace, scenarioId), addonData));
+        // Tell the project window a project is on its way before building it (which takes seconds for a large one): a
+        // save there waits for it, rather than writing the project as it was before this change.
+        if (!projectWindow.isDestroyed()) projectWindow.webContents.send('launcherOpenProjectPending');
+        let payload;
+        try {
+            payload = await decodeProjectForRenderer(await buildProject(workspace, keyFor(workspace, scenarioId), addonData));
+        } catch (error) {
+            if (!projectWindow.isDestroyed()) projectWindow.webContents.send('launcherOpenProjectAbandoned');
+            throw error;
+        }
         if (projectWindow.isDestroyed()) throw new Error('The project window has been closed.');
         projectWindow.webContents.send('launcherOpenProject', { ...payload, silent, addonName: addon.manifest.name, suggestedFilename: `${addon.manifest.name.replaceAll(/[^A-Za-z0-9]+/g, '')}.kjt` });
         if (focus) {
