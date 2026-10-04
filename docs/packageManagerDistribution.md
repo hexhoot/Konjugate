@@ -2,11 +2,11 @@
 
 # Package manager distribution
 
-Konjugate's release pipeline (`.github/workflows/release.yml`) already builds an unsigned DMG/EXE/AppImage on every `v*` tag and publishes them to a GitHub Release — see [releasePackaging.md](releasePackaging.md). This document covers the next layer: getting those same builds discoverable through Homebrew Cask, winget, Snap, and Flathub.
+Konjugate's release pipeline (`.github/workflows/release.yml`) already builds an unsigned DMG/EXE/AppImage on every `v*` tag and publishes them to a GitHub Release — see [releasePackaging.md](releasePackaging.md). This document covers the next layer: getting those same builds discoverable through Homebrew Cask, winget, Chocolatey, Snap, and Flathub.
 
-Two decisions shape everything below, both made deliberately: Konjugate ships **unsigned** for now (no Apple Developer ID, no Windows code-signing certificate — revisit once there's real traction), and none of the four channels here cost anything to register on or publish through, so nothing is being skipped for budget reasons.
+Two decisions shape everything below, both made deliberately: Konjugate ships **unsigned** for now (no Apple Developer ID, no Windows code-signing certificate — revisit once there's real traction), and none of the channels here cost anything to register on or publish through, so nothing is being skipped for budget reasons.
 
-**Current status: all four channels are deferred.** None has a CI job in `release.yml` right now — see each section below for why. Homebrew Cask is blocked by real requirements (notarization, notability), not just a setup gap. winget and Snap are genuinely just a one-time human setup step away (see their sections), but that setup hasn't happened yet, so their jobs were removed rather than left in the workflow permanently failing. Flathub is blocked by its own project-maturity and AI-content policies (see its section) — revisit once those no longer apply.
+**Current status:** winget and Chocolatey have CI jobs in `release.yml` (`wingetRelease`, `chocolateyRelease`) that run on every `v*` tag but are opt-in by secret — with `WINGET_TOKEN` / `CHOCOLATEY_API_KEY` unset, the job skips its real step with a notice instead of failing, so a release never goes red for a channel that isn't set up yet. Each needs a one-time human setup step first (see their sections). Homebrew Cask and Snap are deferred with no job (Cask is blocked by notarization and notability requirements; Snap by a missing store credential and an untested `snapcraft.yaml`), and Flathub is blocked by its own project-maturity and AI-content policies (see its section) — revisit once those no longer apply.
 
 ## Shared app metadata
 
@@ -31,16 +31,27 @@ What's kept, ready for when that's true:
 
 ## winget
 
-**Automated today:** nothing — no `wingetRelease` job exists in `release.yml` right now (removed rather than left permanently failing). It would use `vedantmgoyal9/winget-releaser`, but that action's own first build step explicitly checks that the `identifier` already exists in `microsoft/winget-pkgs` and errors out if not (confirmed by reading its source directly, not assumed from its docs) — it calls `komac update`, never `komac new`, so it can't create the first listing.
+**Automated:** the `wingetRelease` job in `release.yml` runs after the GitHub Release is published and uses `vedantmgoyal9/winget-releaser` to open a version-bump PR against `microsoft/winget-pkgs`. It only runs its real step when the `WINGET_TOKEN` secret is set. That action's own first build step explicitly checks that the `identifier` already exists in `microsoft/winget-pkgs` and errors out if not (confirmed by reading its source directly, not assumed from its docs) — it calls `komac update`, never `komac new`, so it can't create the first listing. That's why the token must only be added after step 3 below has merged.
 
 **One-time setup, in order:**
-1. Decide the winget `PackageIdentifier` (winget's `Publisher.Package` convention) — the job used `ZeninEasaPanthakkalakath.Konjugate` before it was removed; reuse that value or pick another, just use the same one in step 2 and in the re-added job (see below).
+1. Decide the winget `PackageIdentifier` (winget's `Publisher.Package` convention) — `release.yml` uses `Konjugate.Konjugate`; if you pick another, use the same value in step 3 and in the job.
 2. Fork `microsoft/winget-pkgs` under your own GitHub account.
-3. Submit the first manifest by hand — either `wingetcreate new` or `komac submit`, pointed at a published `-setup.exe` release asset — as a PR to `microsoft/winget-pkgs`.
+3. Submit the first manifest by hand — either `wingetcreate new` or `komac submit`, pointed at a published `-setup.exe` release asset — as a PR to `microsoft/winget-pkgs`, and wait for it to merge.
 4. Generate a **classic** PAT with `public_repo` scope, stored as this repo's `WINGET_TOKEN` secret.
-5. Re-add a `wingetRelease` job to `release.yml` (see this file's git history for the exact configuration that was removed) — `needs: release`, tag-gated, using `winget-releaser` with the `identifier`/`installers-regex`/`token` inputs.
 
-Once merged and the job is back, it bumps the manifest automatically on every future release.
+From the next tag on, the job opens the bump PR automatically. Microsoft's bots validate it and the merge is outside this project's control, so a new version appears in winget some hours or days after the release, not instantly. The installer is unsigned, so reviewers' Defender scan occasionally flags a false positive that needs a manual resubmission.
+
+## Chocolatey
+
+**Automated:** the `chocolateyRelease` job in `release.yml` runs on a Windows runner after the GitHub Release is published. It only runs its real step when the `CHOCOLATEY_API_KEY` secret is set. It runs `scripts/generateChocolateyPackage.mjs`, which fills the templates in `packaging/chocolatey/` (a `.nuspec`, `chocolateyInstall.ps1`, `chocolateyUninstall.ps1`) from the real published release and `packaging/appMetadata.yml`, then `choco pack` and `choco push` the result. The generator downloads the just-published `-setup.exe` and computes its sha256, so the checksum in the pushed package is verified against exactly what users get. The install script runs the NSIS installer with `/S` (the same silent path `release.yml` exercises in CI); the uninstall script finds the installer's Add/Remove Programs entry rather than hardcoding a path. Run `node scripts/generateChocolateyPackage.mjs [vTag]` locally to inspect the output in `out/chocolatey/` without pushing anything.
+
+**One-time setup:**
+1. Create an account on chocolatey.org and copy the API key from its account page.
+2. Store it as this repo's `CHOCOLATEY_API_KEY` secret.
+
+**What to expect:** a successful `choco push` only means the package entered Chocolatey's moderation queue, not that it's live. New packages go through automated checks (VirusTotal scan, install/uninstall test on a clean VM) and then human moderation, which for a first package can take days to weeks with back-and-forth. The unsigned installer can trigger a VirusTotal false positive; a rejection arrives by email and is answered on the package's page, not in CI. After a version has been approved, later versions are validated faster.
+
+`iconUrl` in the nuspec points at `assets/icon.svg` on `master` on GitHub, because the PNG/ICO icons are generated and gitignored. If moderation objects to an SVG icon, commit a PNG and change that URL.
 
 ## Snap
 

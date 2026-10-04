@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright © 2026 Zenin Easa Panthakkalakath -->
+<!-- Template: scripts/generateChocolateyPackage.mjs fills in the double-brace placeholders and writes the real package to out/chocolatey/. Descriptive text comes from packaging/appMetadata.yml, not from here. -->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>konjugate</id>
+    <version>{{version}}</version>
+    <title>{{name}}</title>
+    <authors>{{developerName}}</authors>
+    <owners>{{developerName}}</owners>
+    <projectUrl>{{homepage}}</projectUrl>
+    <packageSourceUrl>{{homepage}}/tree/master/packaging/chocolatey</packageSourceUrl>
+    <projectSourceUrl>{{homepage}}</projectSourceUrl>
+    <bugTrackerUrl>{{bugtracker}}</bugTrackerUrl>
+    <docsUrl>{{homepage}}/tree/master/docs</docsUrl>
+    <licenseUrl>{{homepage}}/blob/master/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <iconUrl>https://raw.githubusercontent.com/zenineasa/Konjugate/master/assets/icon.svg</iconUrl>
+    <copyright>Copyright © 2026 {{developerName}}</copyright>
+    <tags>konjugate simulation digital-twin engineering graph multiphysics cross-platform</tags>
+    <summary>{{summary}}</summary>
+    <description>{{description}}</description>
+    <releaseNotes>{{homepage}}/releases/tag/v{{version}}</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

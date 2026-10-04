@@ -246,19 +246,69 @@ jobs:
                   files: out/release/*
                   body_path: ${{ runner.temp }}/releaseNotes.md
 
-    # No package-manager publish jobs here for now -- winget, Snap, and Homebrew Cask are all
-    # deliberately deferred (see docs/packageManagerDistribution.md for the full picture and per-
-    # channel reasoning):
+    # Package-manager publish jobs. Each one is opt-in by secret: with the secret unset, the job
+    # still runs but its real step is skipped with a notice, so a release never goes red just
+    # because a channel hasn't been set up. See docs/packageManagerDistribution.md for the one-time
+    # manual setup each channel needs before its secret is added.
+    #
+    # Homebrew Cask and Snap remain deliberately deferred, with no job here:
     #   - Homebrew Cask: a real `brew audit --new` run surfaced hard blockers (macOS notarization,
     #     a project-notability bar) that aren't quick fixes.
-    #   - winget: winget-releaser can only bump an already-existing package, not create the first
-    #     one, and that first manifest hasn't been submitted to microsoft/winget-pkgs yet.
     #   - Snap: needs a one-time Snapcraft Store credential (SNAPCRAFT_STORE_CREDENTIALS) that
     #     doesn't exist yet, and distribution/snap/snapcraft.yaml itself has never been run through
-    #     a real
-    #     `snapcraft pack`.
-    # The tooling for each (generator scripts, distribution/snap/snapcraft.yaml, draft casks) is
-    # kept as-is,
-    # just not wired into this workflow -- re-add a job here (winget-releaser and
-    # canonical/action-build + canonical/action-publish are still the right actions, see this
-    # file's git history for the exact configuration) once a given channel's blocker is cleared.
+    #     a real `snapcraft pack`.
+    # Re-add a job for either (see this file's git history, commit c40e5ee, for the exact
+    # configuration) once its blocker is cleared.
+
+    wingetRelease:
+        needs: release
+        if: startsWith(github.ref, 'refs/tags/v')
+        runs-on: ubuntu-latest
+        env:
+            WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        steps:
+            # winget-releaser only BUMPS an existing package -- its own action.yml checks that the
+            # PackageIdentifier already exists in microsoft/winget-pkgs and errors out if not. So
+            # WINGET_TOKEN must only be added after the first, manually submitted manifest has been
+            # merged upstream.
+            - name: Skip when winget isn't set up yet
+              if: env.WINGET_TOKEN == ''
+              run: echo "::notice::WINGET_TOKEN is not set; skipping winget (see docs/packageManagerDistribution.md)."
+            - uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
+              if: env.WINGET_TOKEN != ''
+              with:
+                  identifier: Konjugate.Konjugate
+                  installers-regex: '-setup\.exe$'
+                  token: ${{ secrets.WINGET_TOKEN }}
+
+    chocolateyRelease:
+        needs: release
+        if: startsWith(github.ref, 'refs/tags/v')
+        # Windows because `choco` is preinstalled there and `choco pack` is Windows-only.
+        runs-on: windows-latest
+        env:
+            CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        steps:
+            - name: Skip when Chocolatey isn't set up yet
+              if: env.CHOCOLATEY_API_KEY == ''
+              run: echo "::notice::CHOCOLATEY_API_KEY is not set; skipping Chocolatey (see docs/packageManagerDistribution.md)."
+            - uses: actions/checkout@v4
+              if: env.CHOCOLATEY_API_KEY != ''
+            - uses: actions/setup-node@v4
+              if: env.CHOCOLATEY_API_KEY != ''
+              with:
+                  node-version: 24.19.0
+            - name: Build and push the Chocolatey package
+              if: env.CHOCOLATEY_API_KEY != ''
+              shell: pwsh
+              # The generator downloads the just-published release asset and hashes it, so the
+              # pushed package is verified against exactly what users get. A successful push only
+              # means the package entered Chocolatey's moderation queue, not that it's live.
+              run: |
+                  npm install --no-save js-yaml
+                  node scripts/generateChocolateyPackage.mjs "${{ github.ref_name }}"
+                  choco pack out/chocolatey/konjugate.nuspec --outputdirectory out/chocolatey
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  $nupkg = Get-ChildItem out/chocolatey/konjugate.*.nupkg | Select-Object -First 1
+                  choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
