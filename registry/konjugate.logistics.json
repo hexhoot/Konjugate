@@ -11,6 +11,7 @@
     "license": "AGPL-3.0-only",
     "domain": "logistics",
     "url": "https://github.com/zenineasa/Konjugate-Logistics",
+    "image": "images/konjugate.logistics.webp",
     "packages": [
         { "packageType": "plugin", "packageId": "konjugate.logistics.engine" },
         { "packageType": "addon", "packageId": "konjugate.logistics.toolbox" }

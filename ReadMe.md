@@ -102,6 +102,9 @@ It works in two stages: a lagged partial-correlation pass cheaply screens which 
 Konjugate ships with a built-in Explorer for discovering and one-click-installing add-ons and plugins, with no central marketplace to run or depend on — see [the Addon Explorer](docs/addonExplorer.md) for how it works. A few real examples are already published:
 
 <table>
+<td width="280"><a href="https://github.com/zenineasa/Konjugate-Logistics"><img src="registry/images/konjugate.logistics.webp" alt="Konjugate Logistics Toolbox"></a></td>
+<td><strong><a href="https://github.com/zenineasa/Konjugate-Logistics">Konjugate Logistics Toolbox</a></strong><br>Supply-chain and logistics modeling for Konjugate: ports, warehouses, road and rail lanes conserving containers and trucks as stocks and flows, plus a toolbox that turns any region's OpenStreetMap data into a runnable network model.</td>
+</tr>
 <tr>
 <td width="280"><a href="https://github.com/zenineasa/Konjugate-Fintech"><img src="registry/images/konjugate.fintech.webp" alt="Konjugate Fintech Toolbox"></a></td>
 <td><strong><a href="https://github.com/zenineasa/Konjugate-Fintech">Konjugate Fintech Toolbox</a></strong><br>Quantitative finance, DeFi, and systemic-risk modeling for Konjugate: interbank contagion stress-testing and market-dynamics causal transmission.</td>
@@ -118,6 +121,7 @@ Konjugate ships with a built-in Explorer for discovering and one-click-installin
 <td width="280"><a href="https://github.com/zenineasa/Konjugate-HelloWorld"><img src="registry/images/konjugate.helloWorld.webp" alt="Hello World"></a></td>
 <td><strong><a href="https://github.com/zenineasa/Konjugate-HelloWorld">Hello World</a></strong><br>A minimal Konjugate add-on — the simplest possible example of the add-on API, meant as a starting point for anyone learning to author one.</td>
 </tr>
+<tr>
 </table>
 
 Install any of these from Konjugate's own Extensions dialog (Discover tab), or see [Add-on development](docs/addonDevelopment.md) to build your own.
