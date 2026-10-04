@@ -189,6 +189,26 @@ jobs:
                   Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait
             - name: Verify packaged engine
               run: make verifyPackagedEngine
+            - name: Build Microsoft Store MSIX
+              # Opt-in by the MSIX_IDENTITY_NAME repository variable (Settings -> Secrets and
+              # variables -> Actions -> Variables), which also needs MSIX_PUBLISHER and
+              # MSIX_PUBLISHER_DISPLAY_NAME -- the identity Partner Center assigns to the reserved
+              # app name. Unsigned on purpose: the Store signs it on ingestion. Reuses the packaged
+              # app folder `make distributable` just built, so this adds seconds, not a rebuild.
+              # Deliberately written to out/msix, not out/release, and uploaded under a name that
+              # does not match release-* so it never reaches the GitHub Release.
+              if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v') && vars.MSIX_IDENTITY_NAME != ''
+              env:
+                  MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+                  MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+                  MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+              run: node scripts/createMsixPackage.mjs out/package/Konjugate-win32-x64 out/msix/Konjugate-x64.msix x64
+            - uses: actions/upload-artifact@v4
+              if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v') && vars.MSIX_IDENTITY_NAME != ''
+              with:
+                  name: msix-Windows-X64
+                  path: out/msix/Konjugate-x64.msix
+                  if-no-files-found: error
             - uses: actions/upload-artifact@v4
               with:
                   # runner.arch disambiguates the two macOS runners (macos-latest and
@@ -210,6 +230,10 @@ jobs:
             - uses: actions/download-artifact@v4
               with:
                   path: out/release
+                  # Only the installers: without a filter this would also download the unsigned
+                  # MSIX artifact below, and the step that publishes out/release/* would attach it
+                  # to the GitHub Release.
+                  pattern: release-*
                   merge-multiple: true
             - name: Compose release notes
               env:
@@ -311,4 +335,44 @@ jobs:
                   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
                   $nupkg = Get-ChildItem out/chocolatey/konjugate.*.nupkg | Select-Object -First 1
                   choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    microsoftStoreRelease:
+        needs: release
+        if: startsWith(github.ref, 'refs/tags/v')
+        runs-on: windows-latest
+        env:
+            MS_STORE_CLIENT_SECRET: ${{ secrets.MS_STORE_CLIENT_SECRET }}
+        steps:
+            # Updates an EXISTING Store listing -- the first submission is made by hand in Partner
+            # Center (listing, privacy policy, age rating, runFullTrust justification), and the
+            # Azure AD app has to be linked to the Partner Center account. Needs the
+            # MSIX_IDENTITY_NAME/MSIX_PUBLISHER variables too, since the build job only produces the
+            # MSIX when they are set. See docs/packageManagerDistribution.md.
+            - name: Skip when the Microsoft Store isn't set up yet
+              if: env.MS_STORE_CLIENT_SECRET == ''
+              run: echo "::notice::MS_STORE_CLIENT_SECRET is not set; skipping the Microsoft Store (see docs/packageManagerDistribution.md)."
+            - uses: actions/download-artifact@v4
+              if: env.MS_STORE_CLIENT_SECRET != ''
+              with:
+                  name: msix-Windows-X64
+                  path: out/msix
+            - uses: microsoft/setup-msstore-cli@v1
+              if: env.MS_STORE_CLIENT_SECRET != ''
+            - name: Submit the MSIX to the Microsoft Store
+              if: env.MS_STORE_CLIENT_SECRET != ''
+              shell: pwsh
+              # A successful publish only means the submission entered Microsoft's certification
+              # review (a few days), not that it is live. The msstore flags below are from its
+              # documentation, not yet exercised against a real submission -- if the first run
+              # rejects one, `msstore publish --help` is the place to check.
+              env:
+                  MS_STORE_TENANT_ID: ${{ secrets.MS_STORE_TENANT_ID }}
+                  MS_STORE_CLIENT_ID: ${{ secrets.MS_STORE_CLIENT_ID }}
+                  MS_STORE_SELLER_ID: ${{ secrets.MS_STORE_SELLER_ID }}
+                  MS_STORE_PRODUCT_ID: ${{ secrets.MS_STORE_PRODUCT_ID }}
+              run: |
+                  msstore reconfigure --tenantId $env:MS_STORE_TENANT_ID --sellerId $env:MS_STORE_SELLER_ID --clientId $env:MS_STORE_CLIENT_ID --clientSecret $env:MS_STORE_CLIENT_SECRET
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  msstore publish out/msix/Konjugate-x64.msix --appId $env:MS_STORE_PRODUCT_ID
                   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

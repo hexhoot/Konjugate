@@ -14,7 +14,9 @@ import { startEngineRun } from './engineAdapter.mjs';
 import { encodeProjectFile } from './projectFile.mjs';
 
 const maximumInputBytes = 10 * 1024 * 1024;
-const importerTimeoutMilliseconds = 30000;
+// Long enough for an importer that builds a large region (routing every lane over a city's roads takes tens of seconds,
+// more on a busy machine); short enough that one that hangs is still stopped.
+const importerTimeoutMilliseconds = 120000;
 const maximumImporterDataBytes = 8 * 1024 * 1024;
 const maximumOptionsBytes = 2 * 1024 * 1024;
 const maximumFetchBytes = 5 * 1024 * 1024;

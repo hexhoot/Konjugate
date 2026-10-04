@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <stdexcept>
+#include <system_error>
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
@@ -65,7 +66,12 @@ struct CompilerRunResult {
 };
 
 #ifdef _WIN32
-CompilerRunResult runCppCompiler(const std::string& compilerPath, const std::vector<std::string>& arguments) {
+// workingDirectory is where the compiler process runs: MSVC's cl.exe writes its intermediate .obj files
+// into its working directory (there is no /Fo here), so inheriting the host process's directory breaks
+// whenever that is not writable -- e.g. C:\Windows\System32 when launched from an MSIX package, or
+// C:\Program Files\Konjugate from a shortcut.
+CompilerRunResult runCppCompiler(const std::string& compilerPath, const std::vector<std::string>& arguments,
+                                 const std::filesystem::path& workingDirectory) {
     std::string commandLine = "\"" + compilerPath + "\"";
     for (const auto& arg : arguments) {
         commandLine += " \"" + arg + "\"";
@@ -100,6 +106,7 @@ CompilerRunResult runCppCompiler(const std::string& compilerPath, const std::vec
 
     std::vector<char> cmdLineBuf(commandLine.begin(), commandLine.end());
     cmdLineBuf.push_back('\0');
+    const std::string workingDirectoryString = workingDirectory.string();
 
     BOOL bSuccess = CreateProcessA(
         NULL,
@@ -109,7 +116,7 @@ CompilerRunResult runCppCompiler(const std::string& compilerPath, const std::vec
         TRUE,
         0,
         NULL,
-        NULL,
+        workingDirectoryString.empty() ? NULL : workingDirectoryString.c_str(),
         &siStartInfo,
         &piProcInfo
     );
@@ -144,7 +151,10 @@ CompilerRunResult runCppCompiler(const std::string& compilerPath, const std::vec
     return {exitCode == 0, diagnostics};
 }
 #else
-CompilerRunResult runCppCompiler(const std::string& compilerPath, const std::vector<std::string>& arguments) {
+// gcc/clang write no intermediate files when compiling and linking in one step, so the working directory
+// only matters on Windows.
+CompilerRunResult runCppCompiler(const std::string& compilerPath, const std::vector<std::string>& arguments,
+                                 const std::filesystem::path& /*workingDirectory*/) {
     int errorPipe[2];
     if (::pipe(errorPipe) != 0) throw std::runtime_error("Failed to create a pipe for the native build.");
 
@@ -288,11 +298,18 @@ MsvcEnvironmentFlags getMsvcEnvironmentFlags(const std::string& compilerPath) {
 
 } // namespace
 
-void buildNativeArtifact(const std::filesystem::path& sourcePath, const std::filesystem::path& gluePath,
-                          const std::filesystem::path& includeDirectory, const std::filesystem::path& artifactPath,
+void buildNativeArtifact(const std::filesystem::path& sourcePathArgument, const std::filesystem::path& gluePathArgument,
+                          const std::filesystem::path& includeDirectoryArgument, const std::filesystem::path& artifactPathArgument,
                           bool sharedLibrary, const std::string& compilerOverride, const std::string& failureContext,
                           bool needsDynamicLoaderLibrary) {
     const std::string compiler = resolveCompiler(compilerOverride);
+
+    // The compiler runs in the artifact's directory (see runCppCompiler), so every path handed to it
+    // must be absolute -- a relative one would silently start resolving against that directory instead.
+    const auto sourcePath = std::filesystem::absolute(sourcePathArgument);
+    const auto gluePath = std::filesystem::absolute(gluePathArgument);
+    const auto artifactPath = std::filesystem::absolute(artifactPathArgument);
+    const auto includeDirectory = includeDirectoryArgument.empty() ? includeDirectoryArgument : std::filesystem::absolute(includeDirectoryArgument);
 
     std::string compilerLower = compiler;
     std::transform(compilerLower.begin(), compilerLower.end(), compilerLower.begin(), ::tolower);
@@ -349,7 +366,14 @@ void buildNativeArtifact(const std::filesystem::path& sourcePath, const std::fil
 #endif
     }
 
-    const auto result = runCppCompiler(compiler, arguments);
+    const auto result = runCppCompiler(compiler, arguments, artifactPath.parent_path());
+    if (isMsvc) {
+        // cl.exe leaves one .obj per source file next to where it ran; nothing needs them afterwards.
+        for (const auto* source : {&sourcePath, &gluePath}) {
+            std::error_code ignored;
+            std::filesystem::remove(artifactPath.parent_path() / source->stem().concat(".obj"), ignored);
+        }
+    }
     if (!result.success) {
         std::filesystem::remove(artifactPath);
         throw std::runtime_error("Failed to compile " + failureContext + ":\n" + result.diagnostics);

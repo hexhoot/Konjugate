@@ -15,6 +15,7 @@ desktopId := com.konjugate.Konjugate
 appVersion := $(shell node -p "require('./package.json').version")
 packageDir := out/package
 releaseDir := out/release
+msixDir := out/msix
 enginePackageDir := out/packageResources/engine
 ifeq ($(OS),Windows_NT)
 	hostSystem := Windows
@@ -119,7 +120,7 @@ endif
 	icons iconsPng iconsWindows iconsMacos iconsWeb cleanIcons \
 	engine \
 	installDependencies checkPackaging packageApp packageMacos packageWindows packageLinux \
-	distributable distributableMacos distributableWindows distributableWindowsPortable distributableLinux \
+	distributable distributableMacos distributableWindows distributableWindowsPortable distributableWindowsMsix distributableLinux \
 	verifyPackagedEngine verifyPackagedInteraction verifyPackage \
 	build cleanPackage clean
 
@@ -368,6 +369,11 @@ distributableWindowsPortable: packageWindows
 		$(packageDir)/$(appName)-win32-$(hostArch) \
 		$(releaseDir)/$(appName)-$(appVersion)-windows-$(hostArch).zip
 	@echo "Created $(releaseDir)/$(appName)-$(appVersion)-windows-$(hostArch).zip"
+
+# Unsigned MSIX for the Microsoft Store (spike) -- see scripts/createMsixPackage.mjs. Not part of
+# `distributable`: it needs Partner Center identity values to be Store-ready.
+distributableWindowsMsix: packageWindows
+	node scripts/createMsixPackage.mjs $(packageDir)/$(appName)-win32-$(hostArch) $(msixDir)/$(appName)-$(appVersion)-$(hostArch).msix $(hostArch)
 
 distributableLinux: packageLinux
 	@command -v appimagetool >/dev/null 2>&1 || { echo "appimagetool is required to create an AppImage."; exit 1; }
