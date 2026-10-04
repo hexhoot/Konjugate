@@ -1,0 +1,19 @@
+{
+    "format": "konjugate-namespace-entry",
+    "formatVersion": 1,
+    "owner": "Zenin Easa Panthakkalakath",
+    "contact": "https://github.com/zenineasa",
+    "publicKeys": [
+        "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA9IOEqyboLiCHrZjtpZWLFUlNPchF7n5D3bso8iPJA4E=\n-----END PUBLIC KEY-----\n"
+    ],
+    "title": "Konjugate Logistics Toolbox",
+    "description": "Supply-chain and logistics modeling for Konjugate: ports, warehouses, road and rail lanes conserving containers and trucks as stocks and flows, plus a toolbox that turns any region's OpenStreetMap data into a runnable network model.",
+    "license": "AGPL-3.0-only",
+    "domain": "logistics",
+    "url": "https://github.com/zenineasa/Konjugate-Logistics",
+    "packages": [
+        { "packageType": "plugin", "packageId": "konjugate.logistics.engine" },
+        { "packageType": "addon", "packageId": "konjugate.logistics.toolbox" }
+    ],
+    "downloadUrl": "https://github.com/zenineasa/Konjugate-Logistics/releases/latest/download/konjugate-logistics-toolbox.zip"
+}
